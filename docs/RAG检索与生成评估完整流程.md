@@ -364,7 +364,7 @@ data/evaluation/reports/t2retrieval_eval_kb{kb_id}_{timestamp}.json
 当前项目已经跑过一批 T2Retrieval （20条）检索评估：
 
 ```text
-report=E:\PythonProject\cook-rag\data\evaluation\reports\t2retrieval_eval_kb5_20260504_153143.json
+report=E:\PythonProject\Veritas-RAG\data\evaluation\reports\t2retrieval_eval_kb5_20260504_153143.json
 dataset=mteb/T2Retrieval
 kb_id=5
 limit_queries=20
@@ -497,7 +497,7 @@ examples=200
 documents=1991
 parent_chunks=1992
 child_chunks=2000
-sample_output=E:\PythonProject\cook-rag\data\evaluation\hotpotqa_ragas_samples.jsonl
+sample_output=E:\PythonProject\Veritas-RAG\data\evaluation\hotpotqa_ragas_samples.jsonl
 sample_count=200
 ```
 
@@ -591,7 +591,7 @@ data/evaluation/reports/ragas_answer_eval_kb{kb_id}_{timestamp}.json
 本项目当前已跑过 10 条：
 
 ```text
-report=E:\PythonProject\cook-rag\data\evaluation\reports\ragas_answer_eval_kb7_20260506_195337.json
+report=E:\PythonProject\Veritas-RAG\data\evaluation\reports\ragas_answer_eval_kb7_20260506_195337.json
 sample_count=10
 success_count=8
 ```
