@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 24% 98%;
+    --foreground: 218 28% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 218 28% 13%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 218 28% 13%;
+    --primary: 188 82% 32%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 43 58% 94%;
+    --secondary-foreground: 218 28% 16%;
+    --muted: 210 22% 93%;
+    --muted-foreground: 216 12% 42%;
+    --accent: 165 42% 91%;
+    --accent-foreground: 218 28% 16%;
+    --destructive: 0 72% 52%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 22% 86%;
+    --input: 214 22% 86%;
+    --ring: 188 82% 32%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: "Microsoft YaHei", "Noto Sans SC", "PingFang SC", sans-serif;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .work-surface {
+    background:
+      linear-gradient(135deg, rgba(10, 125, 140, 0.08), transparent 32%),
+      linear-gradient(180deg, hsl(var(--background)) 0%, #edf4f1 100%);
+  }
+
+  .quiet-panel {
+    @apply border border-border bg-white/90 shadow-[0_16px_48px_rgba(15,54,70,0.08)];
+  }
+
+  .soft-button {
+    @apply rounded-xl border border-border bg-white text-foreground transition-colors hover:bg-muted;
+  }
+}
+
+.prose {
+  @apply max-w-none;
+}
+
+.prose pre {
+  @apply overflow-x-auto rounded-xl border border-border bg-slate-950/5 p-4;
+}
+
+.prose code {
+  @apply rounded-md bg-slate-900/5 px-1.5 py-0.5 text-sm;
+}
+
+.prose pre code {
+  @apply bg-transparent p-0;
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  @apply font-semibold text-foreground;
+}
+
+.prose a {
+  @apply text-primary hover:underline;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.typing-indicator span {
+  animation: pulse-dot 1.5s infinite;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0.4s;
+}

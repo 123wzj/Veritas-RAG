@@ -1,0 +1,4 @@
+data/hf_cache/**
+frontend/dist/**
+data/chroma/**
+.idea/**

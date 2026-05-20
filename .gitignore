@@ -1,0 +1,70 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local data, vector stores, uploads, model/dataset caches
+data/
+*.sqlite3
+*.db
+*.parquet
+*.bin
+*.pickle
+*.safetensors
+*.onnx
+*.onnx_data
+
+# IDE and OS files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local assistant/tooling state
+.agents/
+.claude/
+.impeccable.md
+skills-lock.json
+
+# Temporary files
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+*.bak
