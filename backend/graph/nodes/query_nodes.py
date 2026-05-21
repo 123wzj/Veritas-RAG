@@ -18,10 +18,21 @@ llm = get_llm()
 logger = logging.getLogger(__name__)
 
 CHAT_PATTERNS = (
-    "你好", "您好", "hi", "hello", "在吗", "谢谢", "哈哈",
+    "你好", "您好", "hi", "hello", "在吗", "谢谢", "感谢", "哈哈", "早上好",
+    "晚上好", "你是谁", "介绍一下你自己", "你能做什么", "怎么称呼你",
+    "陪我聊", "随便聊", "讲个笑话", "帮我想", "起个名字", "取个名字",
 )
 TIME_SENSITIVE_PATTERNS = (
     "今天", "最新", "最近", "实时", "当前", "刚刚", "天气", "新闻", "股价", "汇率",
+    "现在", "此刻", "今日", "本周", "今年", "价格", "行情", "热搜", "比赛", "日程",
+)
+KB_SCOPE_PATTERNS = (
+    "知识库", "文档", "资料", "材料", "文件", "这篇", "这份", "本文", "报告",
+    "根据", "依据", "上面", "前面", "上传", "库里", "制度", "手册",
+)
+WEB_SCOPE_PATTERNS = (
+    "联网", "网上", "互联网", "搜索一下", "查一下", "搜一下", "web", "官网",
+    "公开信息", "外部信息",
 )
 
 
@@ -64,7 +75,12 @@ def _is_chat_like(query: str) -> bool:
     stripped = (query or "").strip().lower()
     if not stripped:
         return True
-    if len(stripped) <= 12 and any(pattern in stripped for pattern in CHAT_PATTERNS):
+    compact = re.sub(r"[\s，。！？!?,.、~～]+", "", stripped)
+    if len(compact) <= 24 and any(pattern.lower() in compact for pattern in CHAT_PATTERNS):
+        return True
+    if len(compact) <= 18 and compact in {
+        "好的", "好", "嗯", "嗯嗯", "明白", "可以", "继续", "没事了", "再见",
+    }:
         return True
     return False
 
@@ -73,6 +89,58 @@ def _is_chat_like(query: str) -> bool:
 def _is_time_sensitive(query: str) -> bool:
     normalized = (query or "").lower()
     return any(pattern in normalized for pattern in TIME_SENSITIVE_PATTERNS)
+
+
+def _has_kb_scope(query: str) -> bool:
+    normalized = (query or "").lower()
+    return any(pattern in normalized for pattern in KB_SCOPE_PATTERNS)
+
+
+def _has_web_scope(query: str) -> bool:
+    normalized = (query or "").lower()
+    return any(pattern in normalized for pattern in WEB_SCOPE_PATTERNS)
+
+
+def _route_flags(route_type: str, kb_id: int | None, web_enabled: bool) -> tuple[bool, bool]:
+    if route_type == "chat":
+        return False, False
+    if route_type == "web_search":
+        return False, bool(web_enabled)
+    if route_type == "hybrid":
+        return kb_id is not None, bool(web_enabled)
+    return kb_id is not None, False
+
+
+def _heuristic_route(
+    query: str,
+    kb_id: int | None,
+    web_enabled: bool,
+    query_intent: str | None = None,
+) -> str:
+    normalized = " ".join((query or "").split())
+    intent = (query_intent or "").lower()
+
+    needs_fresh = _is_time_sensitive(normalized) or _has_web_scope(normalized)
+    kb_scoped = _has_kb_scope(normalized)
+
+    if intent == "chat":
+        return "chat"
+
+    if _is_chat_like(normalized) and not kb_scoped and not needs_fresh:
+        return "chat"
+
+    if needs_fresh and web_enabled:
+        if kb_id is not None and kb_scoped:
+            return "hybrid"
+        return "web_search"
+
+    if kb_id is not None:
+        return "knowledge_base"
+
+    if needs_fresh and not web_enabled:
+        return "chat"
+
+    return "chat"
 
 
 
@@ -86,39 +154,8 @@ def _build_sub_query_plan(
     normalized_question = " ".join((question or "").split())
     retrieval_queries = _dedupe_queries((fallback_queries or []) + [normalized_question])
 
-    if _is_chat_like(normalized_question):
-        route_type = "chat"
-        need_retrieval = False
-        need_web_search = False
-    elif _is_time_sensitive(normalized_question):
-        if kb_id is not None and web_enabled:
-            route_type = "hybrid"
-            need_retrieval = True
-            need_web_search = True
-        elif kb_id is not None:
-            route_type = "knowledge_base"
-            need_retrieval = True
-            need_web_search = False
-        elif web_enabled:
-            route_type = "web_search"
-            need_retrieval = False
-            need_web_search = True
-        else:
-            route_type = "chat"
-            need_retrieval = False
-            need_web_search = False
-    elif kb_id is not None:
-        route_type = "knowledge_base"
-        need_retrieval = True
-        need_web_search = False
-    elif web_enabled and query_intent != "chat":
-        route_type = "web_search"
-        need_retrieval = False
-        need_web_search = True
-    else:
-        route_type = "chat"
-        need_retrieval = False
-        need_web_search = False
+    route_type = _heuristic_route(normalized_question, kb_id, web_enabled, query_intent)
+    need_retrieval, need_web_search = _route_flags(route_type, kb_id, web_enabled)
 
     return {
         "sub_question": normalized_question,
@@ -369,13 +406,7 @@ async def plan_query_route(state: RAGState) -> Dict[str, Any]:
     sub_questions = state.get("sub_questions") or []
     existing_plans = state.get("sub_query_plans") or []
 
-    heuristic_route = "knowledge_base" if kb_id is not None else "chat"
-    if _is_chat_like(query):
-        heuristic_route = "chat"
-    elif _is_time_sensitive(query_rewritten) and web_enabled and kb_id is None:
-        heuristic_route = "web_search"
-    elif _is_time_sensitive(query_rewritten) and web_enabled and kb_id is not None:
-        heuristic_route = "hybrid"
+    heuristic_route = _heuristic_route(query_rewritten or query, kb_id, web_enabled, query_intent)
 
     system_prompt = """你是 Agentic RAG 路由规划器。请判断当前问题最适合走哪条路由。
 输出 JSON：
@@ -389,9 +420,10 @@ async def plan_query_route(state: RAGState) -> Dict[str, Any]:
 
 规则：
 1. 闲聊、问候、非知识型对话优先 chat
-2. 明显依赖最新信息且允许联网时优先 web_search 或 hybrid
-3. 知识库内问题优先 knowledge_base
-4. hybrid 表示先走知识库检索，再结合联网补充
+2. 明显依赖最新信息且允许联网时优先 web_search
+3. 只有同时需要知识库内容和外部最新信息时才使用 hybrid
+4. 知识库内问题优先 knowledge_base
+5. 当前选中了知识库，不代表所有问题都必须走 knowledge_base
 """
 
     user_prompt = f"""原始问题：{query}
@@ -417,21 +449,10 @@ async def plan_query_route(state: RAGState) -> Dict[str, Any]:
     if route_type not in {"knowledge_base", "web_search", "chat", "hybrid"}:
         route_type = heuristic_route
 
-    need_retrieval = bool(result.get("need_retrieval", route_type in {"knowledge_base", "hybrid"} and kb_id is not None))
-    need_web_search = bool(result.get("need_web_search", route_type in {"web_search", "hybrid"} and web_enabled))
+    if heuristic_route in {"chat", "web_search"}:
+        route_type = heuristic_route
 
-    if route_type == "chat":
-        need_retrieval = False
-        need_web_search = False
-    elif route_type == "web_search":
-        need_retrieval = False
-        need_web_search = web_enabled
-    elif route_type == "hybrid":
-        need_retrieval = kb_id is not None
-        need_web_search = web_enabled
-    else:
-        need_retrieval = kb_id is not None
-        need_web_search = False
+    need_retrieval, need_web_search = _route_flags(route_type, kb_id, web_enabled)
 
     sub_query_plans = [
         plan.copy() for plan in (
@@ -441,26 +462,20 @@ async def plan_query_route(state: RAGState) -> Dict[str, Any]:
         )
     ]
 
-    if route_type in {"hybrid", "web_search", "knowledge_base"}:
+    if len(sub_query_plans) == 1 and route_type in {"chat", "hybrid", "web_search", "knowledge_base"}:
         adjusted_plans = []
         for plan in sub_query_plans:
             current_plan = plan.copy()
-            if current_plan.get("route_type") == "chat":
+            if current_plan.get("route_type") == "chat" and route_type != "chat":
                 adjusted_plans.append(current_plan)
                 continue
 
-            if route_type == "hybrid":
-                current_plan["route_type"] = "hybrid"
-                current_plan["need_retrieval"] = kb_id is not None
-                current_plan["need_web_search"] = web_enabled
-            elif route_type == "web_search":
-                current_plan["route_type"] = "web_search"
-                current_plan["need_retrieval"] = False
-                current_plan["need_web_search"] = web_enabled
-            elif route_type == "knowledge_base":
-                current_plan["route_type"] = "knowledge_base"
-                current_plan["need_retrieval"] = kb_id is not None
-                current_plan["need_web_search"] = False
+            current_plan["route_type"] = route_type
+            current_plan["need_retrieval"], current_plan["need_web_search"] = _route_flags(
+                route_type,
+                kb_id,
+                web_enabled,
+            )
 
             current_plan["planned_tools"] = [
                 tool
