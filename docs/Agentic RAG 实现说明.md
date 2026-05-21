@@ -267,6 +267,13 @@ flowchart TD
 
 基于意图、知识库上下文和联网能力，规划查询路由。
 
+当前实现采用两层判断：
+
+1. 确定性规则先做硬门控。
+2. LLM 只负责补充边界判断和 route reason。
+
+这样做的目的是避免“当前选中了知识库，就把所有问题都送进知识库检索”。
+
 当前支持的路由类型：
 
 - `chat`
@@ -278,17 +285,28 @@ flowchart TD
 
 - `chat`
   - 闲聊、问候、轻对话
+  - 普通助手型请求，例如“帮我想个名字”
   - 不走知识库检索
   - 直接进入生成
 - `web_search`
   - 明显依赖实时信息，且允许联网
+  - 例如天气、新闻、股价、行情、今日价格等
   - 直接走联网搜索
 - `knowledge_base`
   - 主要依赖知识库
+  - 例如明确提到文档、资料、报告、制度、上传内容等
   - 走检索链路
 - `hybrid`
-  - 子问题同时允许知识库检索和联网补充
-  - 常见于“先检索内部知识，再补外部最新信息”的场景
+  - 同时需要内部知识库和外部最新信息
+  - 常见于“根据这份文档，结合最新行业政策分析影响”这类问题
+
+规则优先级：
+
+1. 明确闲聊或普通助手请求，优先 `chat`
+2. 明确实时 / 外部信息请求，且允许联网，优先 `web_search`
+3. 明确知识库范围，优先 `knowledge_base`
+4. 同时有知识库范围和实时 / 外部信息需求，走 `hybrid`
+5. 兜底情况下：有 `kb_id` 走 `knowledge_base`，没有 `kb_id` 走 `chat`
 
 当前实现里，`plan_query_route` 仍然会产出一个整体级 `route_type`，用于日志和前端事件展示；
 但真正驱动后续执行的，已经变成 `sub_query_plans` 里的逐子问题布尔开关：
@@ -303,12 +321,13 @@ flowchart TD
 - 不再让明显实时问题先在知识库里空转很多轮
 - 不再要求复合问题只能共享一个粗粒度 route
 - 让不同子问题走不同工具链路，再在最终阶段统一汇总
+- LLM 即使误判为知识库，明显的 `chat / web_search` 规则也会优先保护
 
 
 
 ##   5.4 对比主流技术，还可以优化什么
 
-  我觉得最值得改的是下面 5 个点，按优先级排。
+  当前路由已经从“LLM + 简单关键词 + kb_id 默认兜底”调整为“规则门控 + LLM 边界判断”。还可以继续优化下面几项。
 
 ---
   1. 把“缺失信息 / 过滤条件”变成结构化状态
@@ -352,17 +371,16 @@ flowchart TD
   这是我认为最值得优先做的。
 
 ---
-  2. 路由判定现在偏“关键词启发式”，可以升级成轻量分类器
+  2. 路由判定可以继续升级成轻量分类器
 
-  目前主要靠：
+  当前已经增加了几类规则：
 
-  - _is_chat_like()：backend/graph/nodes/query_nodes.py:61
-  - _is_time_sensitive()：backend/graph/nodes/query_nodes.py:70
+  - chat-like 判断
+  - time-sensitive 判断
+  - knowledge-base scope 判断
+  - web scope 判断
 
-  问题是：
-  - chat-like 很多边界情况会误判
-  - “最新/今天”不一定真要 web
-  - 某些问题虽然没时间词，但本质上是 web-first
+  这比之前稳定，但本质仍是规则门控。
 
   主流更常见的做法
 
@@ -376,13 +394,13 @@ flowchart TD
 
   有些会用小模型/规则分类器，不一定全靠同一个 LLM prompt。
 
-  你这里建议
+  后续建议
 
-  把 plan_query_route 改成两层：
-  1. deterministic classifier / rules
+  保留当前两层结构：
+  1. deterministic classifier / rules 决定大方向
   2. LLM only for tie-break / explanation
 
-  这样稳定性会更高。
+  如果路由样本积累到一定规模，可以再训练或微调一个轻量分类器。
 
 ---
   3. decomposition 触发条件太浅
@@ -419,30 +437,27 @@ flowchart TD
   这样会比纯关键词更稳。
 
 ---
-  4. hybrid 语义还不够清晰
+  4. hybrid 语义需要持续保持清晰
 
-  这里的 hybrid 实际含义是：
+  当前 `hybrid` 的含义已经调整为：
 
-  - 先 KB 检索
-  - 证据不足时再考虑 web fallback
+  - 当前子问题既需要知识库检索
+  - 也需要联网补充
 
-  因为在 plan_query_route 里：
-  - hybrid 会设置 need_retrieval = True
-  - 但 need_web_search = False
+  也就是：
 
-  见：
-  - backend/graph/nodes/query_nodes.py:306
+  - `need_retrieval = True`
+  - `need_web_search = True`
 
-  这逻辑没错，但名字容易让人误解成“KB + Web 同时查”。
+  这比之前“知识库优先，必要时再 web fallback”的语义更直观。
 
-  建议
+  后续建议
 
-  如果你想跟主流表述更一致，可以把语义拆开：
+  如果后面要表达“先 KB，证据不足再联网”，可以新增独立字段：
 
-  - route_type = knowledge_base
-  - allow_web_fallback = True
+  - `allow_web_fallback = True`
 
-  比单独用 hybrid 更清晰。
+  避免和真正的 `hybrid` 混在一起。
 
 ---
   5. planned_tools 现在更像日志字段，还没真正驱动执行
@@ -479,9 +494,10 @@ flowchart TD
 ---
   第二优先级
 
-  把 route classifier 和 explanation 分开
+  继续完善 route classifier 和 explanation 的边界
   - 规则 / 轻分类模型：决定大方向
   - LLM：补充 route_reason 或做边界判断
+  - 保持 `chat / web_search` 这种明确路由不被 kb_id 覆盖
 
 ---
   第三优先级
