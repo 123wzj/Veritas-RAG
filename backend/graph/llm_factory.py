@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""OpenAI chat model initialization.
+"""OpenAI-compatible chat model initialization.
 
-To switch models, edit OPENAI_MODEL in backend/core/config.py or backend/.env.
+Prefer LLM_* settings; OPENAI_* remains as a compatibility alias.
 """
 
 from langchain_openai import ChatOpenAI
@@ -15,9 +15,9 @@ except ImportError:  # pragma: no cover - fallback for package-style imports
 def get_llm() -> ChatOpenAI:
     """Create a ChatOpenAI instance from the project config."""
     return ChatOpenAI(
-        model=settings.OPENAI_MODEL or settings.LLM_MODEL,
-        api_key=settings.OPENAI_API_KEY,
-        base_url=settings.OPENAI_BASE_URL or None,
+        model=settings.LLM_MODEL or settings.OPENAI_MODEL,
+        api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY,
+        base_url=settings.LLM_BASE_URL or settings.OPENAI_BASE_URL or None,
         temperature=settings.LLM_TEMPERATURE,
         max_tokens=settings.LLM_MAX_TOKENS,
     )

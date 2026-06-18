@@ -6,12 +6,17 @@
 
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
+import asyncio
+import logging
 
 import httpx
 try:
     from core.config import settings
 except ImportError:  # pragma: no cover - fallback for package-style imports
     from backend.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class BaseSearchProvider(ABC):
@@ -41,9 +46,9 @@ class TavilySearchProvider(BaseSearchProvider):
 
     async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """使用 Tavily 进行搜索"""
-        from tavily import TavilyClient
-
         try:
+            from tavily import TavilyClient
+
             client = TavilyClient(api_key=self.api_key)
             response = client.search(
                 query=query,
@@ -64,7 +69,7 @@ class TavilySearchProvider(BaseSearchProvider):
             return results
 
         except Exception as e:
-            print(f"Tavily search error: {e}")
+            logger.warning("Tavily search failed: %s", e)
             return []
 
 
@@ -102,7 +107,7 @@ class SerpApiSearchProvider(BaseSearchProvider):
             return results
 
         except Exception as e:
-            print(f"SerpApi search error: {e}")
+            logger.warning("SerpApi search failed: %s", e)
             return []
 
 
@@ -117,20 +122,23 @@ class DuckDuckGoSearchProvider(BaseSearchProvider):
         try:
             from duckduckgo_search import DDGS
 
-            ddgs = DDGS()
-            results = []
+            def _search() -> List[Dict[str, Any]]:
+                with DDGS() as ddgs:
+                    raw_results = list(ddgs.text(query, max_results=max_results))
+                return [
+                    {
+                        "title": item.get("title"),
+                        "url": item.get("href"),
+                        "snippet": item.get("body"),
+                        "score": 0.7,
+                    }
+                    for item in raw_results[:max_results]
+                ]
 
-            async with httpx.AsyncClient() as client:
-                # DuckDuckGo 不需要 API key
-                search_url = f"https://html.duckduckgo.com/html/?q={query}"
-                response = await client.get(search_url, timeout=30)
-
-            # 简化实现：返回空结果
-            # TODO: 实现真正的 DuckDuckGo 解析
-            return []
+            return await asyncio.to_thread(_search)
 
         except Exception as e:
-            print(f"DuckDuckGo search error: {e}")
+            logger.warning("DuckDuckGo search failed: %s", e)
             return []
 
 

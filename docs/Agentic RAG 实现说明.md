@@ -26,9 +26,25 @@
 - Reranker：`BAAI/bge-reranker-v2-m3`
 - 向量数据库：`Chroma`
 - 关系数据库：`MySQL`
-- 联网搜索：`Tavily / SerpApi`（`DuckDuckGo` provider 已预留但当前仍是占位实现）
+- 联网搜索：`Tavily / SerpApi / DuckDuckGo`
 
-### 2.2 当前存储策略
+### 2.2 配置读取
+
+当前项目只从根目录 `.env` 读取本地配置。
+
+```text
+.env
+```
+
+不再读取：
+
+```text
+backend/.env
+```
+
+原因是两份配置容易互相覆盖。模型、base url、api key、RAGAS evaluator 参数都以根目录 `.env` 为准。
+
+### 2.3 当前存储策略
 
 当前架构已经改为下面这套职责划分：
 
@@ -728,6 +744,14 @@ flowchart TD
 
 也就是最多反思 3 次。
 
+这里要注意“最多 3 次”不是一句口号，代码里真的要收口：
+
+- `route_reflection` 到达 `max_reflections` 后直接 `proceed`
+- `route_evidence` 到达 `max_reflections` 后直接进入生成
+- `backend/graph/graph.py` 显式设置 `GRAPH_RUN_CONFIG.recursion_limit`
+
+大白话：证据不够可以重试，但不能一直重试。到了上限就要带着当前证据生成“有限答案”或说明不足，否则 LangGraph 会认为流程没有结束。
+
 反思阶段会做的事：
 
 - 只对当前仍未覆盖的子问题做下一轮规划
@@ -779,6 +803,8 @@ flowchart TD
 
 如果不通过，且反思次数还没用完，就继续进入 reflection。
 
+如果反思次数已经用完，就进入 `write_memory` 收口，不再继续反思。
+
 ---
 
 ## 8. 生成阶段
@@ -824,8 +850,10 @@ flowchart TD
 5. 子块 dense / sparse 都是 first-stage recall
 6. 父块回补完全走关系数据库
 7. Rerank 以父块上下文为主
-8. 反思轮数调整为 3 次
+8. 反思轮数调整为 3 次，并修正到上限后的收口逻辑
 9. `chat` 路由已经能直接生成，不再依赖证据
+10. 配置统一从根目录 `.env` 加载，不再让 `backend/.env` 覆盖运行配置
+11. RAGAS evaluator 使用低温、低并发、重试配置，降低 parser 空值和连接抖动
 
 ---
 

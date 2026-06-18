@@ -17,6 +17,12 @@ from backend.graph.nodes.reflection_nodes import reflection, route_reflection, r
 from backend.graph.nodes.generation_nodes import generate_answer, verify_answer, route_verification
 from backend.graph.nodes.memory_nodes import load_user_memory, write_memory
 from backend.graph.nodes.web_nodes import web_search
+from backend.core.config import settings
+
+
+GRAPH_RUN_CONFIG = {
+    "recursion_limit": max(25, settings.GRAPH_RECURSION_LIMIT),
+}
 
 
 def create_agentic_rag_graph() -> StateGraph:
@@ -120,8 +126,8 @@ async def run_agentic_rag(
     )
 
     if stream_events:
-        async for event in agentic_rag_graph.astream(initial_state):
+        async for event in agentic_rag_graph.astream(initial_state, config=GRAPH_RUN_CONFIG):
             yield event
     else:
-        final_state = await agentic_rag_graph.ainvoke(initial_state)
+        final_state = await agentic_rag_graph.ainvoke(initial_state, config=GRAPH_RUN_CONFIG)
         yield final_state

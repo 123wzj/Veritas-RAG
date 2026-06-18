@@ -41,7 +41,7 @@
   -> Rerank 精排
   -> Per-sub-question Evidence Packing
   -> Per-sub-question Evidence Grading
-  -> Reflection（最多 3 次）
+  -> Reflection（最多 3 次，到上限后收口）
   -> Per-sub-question 答案生成
   -> 答案聚合
   -> 事实校验
@@ -67,7 +67,7 @@
 | 父块回补 | 按 parent_id 去 MySQL 查父块 | 检索结果和生成上下文职责分离 | 让回答拿到完整上下文 |
 | 精排 | Reranker | 召回到不等于最适合回答 | 提高最终上下文质量 |
 | 证据管理 | Evidence Packing + Evidence ID | 后续生成和验证都要围绕证据对象工作 | 让引用、验证、日志统一 |
-| Agent 控制 | Evidence Grading + Reflection | 系统需要知道何时继续找证据 | 解决“没证据也硬答” |
+| Agent 控制 | Evidence Grading + Reflection | 系统需要知道何时继续找证据，也要知道何时停止 | 解决“没证据也硬答”和“反复重试不收口” |
 | 联网增强 | Web Search 作为补充证据 | 有些问题天然依赖实时信息 | 解决知识库内没有最新信息 |
 | 权限与会话 | ACL + Session / Memory 管理 | 检索结果要受知识库权限和会话上下文约束 | 解决多用户隔离、连续对话和记忆接入问题 |
 | 答案生成 | 结构化生成 + `[E#]` 引用 | 要求可追溯 | 降低幻觉和不可解释性 |
@@ -580,7 +580,7 @@ Agent 需要先判断手头证据够不够，再决定下一步动作。
 - MySQL 父块回补
 - Rerank 精排
 - Evidence Grading
-- Reflection 3 次闭环
+- Reflection 3 次闭环，到上限后必须收口
 - 结构化生成与事实校验
 
 ---
@@ -687,7 +687,73 @@ seconds: 164.053
 
 ---
 
-## 20. 一句话总结
+## 20. RAGAS 生成评估与数据集选择
+
+当前项目已经接入 RAGAS，用来评估端到端答案生成质量。
+
+实现位置：
+
+```text
+backend/evaluation/run_ragas_answer_eval.py
+```
+
+当前已有 HotpotQA 200 条样本：
+
+```text
+data/evaluation/hotpotqa_ragas_samples.jsonl
+kb_id=7
+```
+
+这批数据适合做固定回归基准。它能帮我们检查：
+
+- Query Decomposition 有没有明显退化
+- 检索证据是否能支撑多跳问题
+- Reflection 是否会失控
+- RAGAS evaluator 是否能稳定出分
+- 答案是否基本忠实于证据
+
+但它不是企业落地评估的全部。
+
+原因很简单：
+
+- HotpotQA 是英文百科问答，不是企业文档
+- 标准答案很短，容易拉低 `answer_correctness`
+- 不覆盖权限、无答案、表格、制度版本、中文口语化问题
+- 不覆盖真实用户的闲聊、联网、hybrid 路由分布
+
+所以当前推荐：
+
+```text
+HotpotQA 继续做回归基准。
+企业落地再补一套中文业务 QA 评估集。
+```
+
+业务 QA 至少要覆盖：
+
+- 文档内可回答
+- 文档内找不到答案
+- 多文档综合
+- 表格数字
+- 日期和版本差异
+- 权限隔离
+- 闲聊 / 联网 / 知识库 / hybrid 路由
+
+当前已验证过：
+
+```text
+20 条 collect-only:
+success_count=20
+recursion_errors=0
+
+5 条完整 RAGAS:
+success_count=5
+missing_values=0
+RAGAS evaluator 能稳定连接并出分
+```
+
+---
+
+## 21. 一句话总结
 
 当前项目的核心方法论可以概括为：
 

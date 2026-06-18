@@ -462,17 +462,31 @@ auth_unavailable
 需要检查 `.env` 或 `backend/core/config.py` 中：
 
 ```text
-OPENAI_BASE_URL
-OPENAI_API_KEY
-OPENAI_MODEL
+LLM_BASE_URL / BASE_URL
+LLM_API_KEY
+LLM_MODEL
 ```
 
-当前项目默认类似：
+当前项目只读取根目录 `.env`，不再读取 `backend/.env`。
+
+不要再维护第二份：
 
 ```text
-OPENAI_BASE_URL=http://127.0.0.1:8317/v1
-OPENAI_MODEL=gpt-5.4
+backend/.env
 ```
+
+原因是两份配置容易互相覆盖。之前出现过 `backend/.env` 把模型覆盖成错误模型的问题，所以现在统一成根目录 `.env` 一个来源。
+
+RAGAS evaluator 也走同一个 OpenAI-compatible 服务，但使用更稳的评估配置：
+
+```text
+RAGAS_LLM_TEMPERATURE=0.0
+RAGAS_BATCH_SIZE=2
+RAGAS_RUN_MAX_WORKERS=4
+RAGAS_RUN_MAX_RETRIES=5
+```
+
+大白话：RAGAS 打分要求模型稳定输出结构化结果，所以温度要低、并发要小。
 
 ### 6.3 导入 HotpotQA 生成评估集
 
@@ -586,41 +600,62 @@ data/evaluation/reports/ragas_answer_eval_kb{kb_id}_{timestamp}.json
 }
 ```
 
-### 7.1 当前 10 条 HotpotQA 评估结果
+### 7.1 当前 HotpotQA 稳定性回归结果
 
-本项目当前已跑过 10 条：
+之前旧报告里出现过 recursion limit：
 
 ```text
-report=E:\PythonProject\Veritas-RAG\data\evaluation\reports\ragas_answer_eval_kb7_20260506_195337.json
-sample_count=10
-success_count=8
+report=data/evaluation/reports/ragas_answer_eval_kb7_20260618_111359.json
+sample_count=20
+success_count=15
+recursion_errors=5
 ```
 
-指标：
+原因不是模型完全不可用，而是 reflection 到上限时没有及时收口，部分样本会继续回到检索/反思链路，最后撞到 LangGraph 默认 recursion limit。
+
+修复后先跑 collect-only，也就是只跑真实 RAG 链路，不调用 RAGAS evaluator：
 
 ```text
-faithfulness: 0.9438
-answer_relevancy: 0.7499
-context_precision: 0.7188
-context_recall: 1.0000
-answer_correctness: 0.3080
+report=data/evaluation/reports/ragas_answer_eval_kb7_20260618_114555.json
+sample_count=20
+success_count=20
+recursion_errors=0
+```
+
+这个结果说明：
+
+- RAG 主流程可以跑完。
+- 第 3、15、16、19、20 条这些之前失败的样本已经通过。
+- recursion limit 问题已经消失。
+
+然后跑 5 条完整 RAGAS：
+
+```text
+report=data/evaluation/reports/ragas_answer_eval_kb7_20260618_122319.json
+sample_count=5
+success_count=5
+faithfulness=0.7813
+answer_relevancy=0.3452
+llm_context_precision_with_reference=0.4400
+context_recall=1.0000
+answer_correctness=0.2576
+missing_values=0
 ```
 
 解释：
 
-- `faithfulness` 高：生成成功的答案大多忠实于上下文。
-- `context_recall` 高：标准答案所需信息基本进入上下文。
-- `context_precision` 中等：上下文整体有用，但仍有噪声。
-- `answer_relevancy` 中等：部分回答有些绕，或拆解后没有直接输出短答案。
-- `answer_correctness` 偏低：HotpotQA 标准答案很短，当前系统输出长中文分解答案，形式差异会拉低分。
-- `success_count=8/10`：有 2 条失败是 `GRAPH_RECURSION_LIMIT`，说明 Agentic 反思/路由在部分问题上没有及时收敛。
+- `context_recall=1.0`：这 5 条里，标准答案需要的信息都进了上下文。
+- `context_precision=0.44`：上下文里仍有噪声，证据筛选还有优化空间。
+- `answer_correctness` 偏低：HotpotQA 标准答案通常很短，当前系统输出长中文解释，形式差异会拉低分。
+- `answer_relevancy` 偏低：答案有时绕得比较多，没有先给短答案。
+- `missing_values=0`：RAGAS evaluator 已经稳定出分，没有空指标。
 
 ### 7.2 常见失败原因
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| `GRAPH_RECURSION_LIMIT` | 反思/检索循环没有停止 | 降低 `MAX_REFLECTION_ROUNDS`，或让 evidence judge 更容易生成 |
-| RAGAS 指标 `nan` | 评估 LLM 调用失败或 parser 失败 | 检查 LLM 服务、重跑、减少并发/样本数 |
+| `GRAPH_RECURSION_LIMIT` | 反思/检索循环没有及时收口 | 检查 `reflection_nodes.py`、`route_verification`、`GRAPH_RECURSION_LIMIT` |
+| RAGAS 指标 `nan` 或空值 | 评估 LLM 调用失败或 parser 失败 | 检查 LLM 服务，降低 `RAGAS_BATCH_SIZE / RAGAS_RUN_MAX_WORKERS` |
 | `auth_unavailable` | 本地模型服务鉴权/供应方不可用 | 重启模型服务，或切换可用模型 |
 | `answer_correctness` 低 | 长答案 vs 短标准答案形式差异 | 增加“先给短答案，再解释”的生成约束 |
 | `context_precision` 低 | 上下文噪声多 | 优化 reranker、top_k、证据去重 |
@@ -724,27 +759,57 @@ data/evaluation/reports/
 - generate_answer prompt。
 - verify_answer prompt。
 
-## 9. 当前项目下一步建议
+## 9. 推荐评估实验矩阵
 
-### 9.1 短期
+不要一次改一堆参数。一次只改一个点，然后用同一批数据重跑。
+
+| 实验 | 主要看什么 |
+| --- | --- |
+| child chunk size 200 / 300 / 500 | recall@10、context_recall |
+| parent chunk size 800 / 1200 / 1600 | faithfulness、answer_correctness |
+| dense only / sparse only / dense+sparse | 哪路召回真正有贡献 |
+| RRF dense 权重 0.4 / 0.5 / 0.7 | fusion 是否比单路更好 |
+| reranker 开 / 关 | mrr@10、ndcg@10、延迟 |
+| top_k 4 / 6 / 10 | context_precision 和答案质量 |
+| decomposition 开 / 关 | 多跳问题是否提升 |
+| reflection 0 / 1 / 3 次 | 成功率、延迟、recursion 风险 |
+| web_search 开 / 关 | 时效问题和外部信息问题 |
+| 短答案 prompt 开 / 关 | HotpotQA answer_correctness |
+
+大白话：评估不是为了追一个漂亮平均分，而是为了知道“改了哪里，哪里变好，哪里变坏”。
+
+## 10. 最重要的落地原则
+
+1. **先看检索，再看答案。** 正确证据没进上下文，生成模型再强也只能猜。
+2. **公开数据集和业务数据集都要有。** HotpotQA 可以做回归，业务 QA 才能说明真实可用性。
+3. **失败样本比平均分更重要。** 平均分只能告诉你大概水平，失败样本才能告诉你该改哪里。
+4. **RAGAS 不是唯一裁判。** RAGAS 适合自动化回归，但上线前仍要人工抽检。
+5. **指标要和延迟一起看。** reranker、reflection、web_search 都可能提质，也会增加耗时。
+6. **每次实验要可复现。** 固定数据集、kb_id、top_k、模型、报告文件，再做前后对比。
+
+## 11. 当前项目下一步建议
+
+### 11.1 短期
 
 - 保留 200 条 HotpotQA 知识库 `kb_id=7` 作为生成评估基准。
 - 先按 `--limit 10`、`--limit 20`、`--limit 50` 分批跑。
-- 修复 `GRAPH_RECURSION_LIMIT` 两类样本，优先让流程稳定。
+- `GRAPH_RECURSION_LIMIT` 已做过一轮修复，后续继续用 collect-only 做回归，确保新改动不会让 reflection 再次失控。
+- 补一份真实业务 QA 评估集，不要只依赖 HotpotQA。
 
-### 9.2 中期
+### 11.2 中期
 
 - 在 `run_t2retrieval_eval.py` 中补充 `precision@K`、`map@K`。
 - 在 `run_ragas_answer_eval.py` 中增加 `--offset`，支持分批跑 0-50、50-100、100-150。
 - 增加“短答案模式”评估 prompt，适配 HotpotQA 这类短答案 benchmark。
+- 给业务 QA 集增加 `question_type`，按类型分别看分数，比如无答案、表格数字、版本日期、多文档综合。
 
-### 9.3 长期
+### 11.3 长期
 
 - 建设项目自己的业务 QA 评估集。
 - 把检索报告和生成报告汇总成 dashboard。
 - 发布前固定跑一批 50-100 条 smoke/regression eval。
 
-## 10. 常用命令速查
+## 12. 常用命令速查
 
 ### 检查 LLM
 

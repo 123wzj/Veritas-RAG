@@ -195,7 +195,7 @@ async def route_reflection(state: RAGState) -> str:
     max_steps = state.get("max_steps", 8)
     sub_query_plans = state.get("sub_query_plans") or []
 
-    if reflection_count > max_reflections or step_count >= max_steps:
+    if reflection_count >= max_reflections or step_count >= max_steps:
         return "proceed"
 
     if any(plan.get("need_retrieval") for plan in sub_query_plans):
@@ -212,11 +212,15 @@ async def route_evidence(state: RAGState) -> str:
     evidence_sufficient = state.get("evidence_sufficient", False)
     need_reflection = state.get("need_reflection", False)
     need_web_search = state.get("need_web_search", False)
+    reflection_count = state.get("reflection_count", 0)
+    max_reflections = state.get("max_reflections", 2)
     sub_query_plans = state.get("sub_query_plans") or []
 
     if any(plan.get("need_web_search") for plan in sub_query_plans) or need_web_search:
         return "web_search"
     if evidence_sufficient:
+        return "generate"
+    if reflection_count >= max_reflections:
         return "generate"
     if any(plan.get("need_retrieval") for plan in sub_query_plans) or need_reflection:
         return "reflect"

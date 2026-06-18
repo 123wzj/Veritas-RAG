@@ -334,6 +334,16 @@ async def verify_answer(state: RAGState) -> Dict[str, Any]:
         }
 
     if sub_query_plans and not all((plan.get("selected_evidence") or []) or plan.get("route_type") == "chat" for plan in sub_query_plans):
+        if state.get("used_web_search"):
+            return {
+                "confidence": state.get("confidence", 0.0),
+                "verification": {
+                    "grounded": True,
+                    "useful": True,
+                    "reason": "web_search_exhausted_no_evidence",
+                },
+                "need_reflection": False,
+            }
         return {
             "confidence": 0.0,
             "verification": {

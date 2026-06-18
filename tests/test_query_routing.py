@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
+import os
 import unittest
+
+os.environ.setdefault("LLM_API_KEY", "test-key")
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from backend.graph.nodes import query_nodes
 

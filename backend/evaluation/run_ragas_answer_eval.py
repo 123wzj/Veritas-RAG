@@ -316,7 +316,9 @@ def run_ragas_current(rows: List[Dict[str, Any]], metric_names: Sequence[str], h
         metrics=metrics,
         llm=get_ragas_llm(),
         embeddings=get_ragas_embeddings(),
+        run_config=get_ragas_run_config(),
         show_progress=True,
+        batch_size=get_ragas_batch_size(),
     )
 
 
@@ -342,7 +344,9 @@ def run_ragas_legacy(rows: List[Dict[str, Any]], metric_names: Sequence[str], ha
         metrics=metrics,
         llm=get_ragas_llm(),
         embeddings=get_ragas_embeddings(),
+        run_config=get_ragas_run_config(),
         raise_exceptions=False,
+        batch_size=get_ragas_batch_size(),
     )
 
 
@@ -420,16 +424,54 @@ def first_attr(module: Any, names: Iterable[str]) -> Optional[Any]:
     return None
 
 
-def get_ragas_llm() -> Any:
-    from graph.llm_factory import get_llm
+def get_project_settings() -> Any:
+    try:
+        from core.config import settings
+    except ImportError:  # pragma: no cover - package-style fallback
+        from backend.core.config import settings
+    return settings
 
-    llm = get_llm()
+
+def get_ragas_llm() -> Any:
+    from langchain_openai import ChatOpenAI
+
+    settings = get_project_settings()
+    llm = ChatOpenAI(
+        model=settings.RAGAS_LLM_MODEL or settings.LLM_MODEL or settings.OPENAI_MODEL,
+        api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY,
+        base_url=settings.LLM_BASE_URL or settings.OPENAI_BASE_URL or None,
+        temperature=settings.RAGAS_LLM_TEMPERATURE,
+        max_tokens=settings.RAGAS_LLM_MAX_TOKENS,
+        timeout=settings.RAGAS_LLM_TIMEOUT,
+        max_retries=settings.RAGAS_LLM_MAX_RETRIES,
+    )
     try:
         from ragas.llms import LangchainLLMWrapper
 
         return LangchainLLMWrapper(llm)
     except Exception:
         return llm
+
+
+def get_ragas_run_config() -> Any:
+    settings = get_project_settings()
+    try:
+        from ragas.run_config import RunConfig
+
+        return RunConfig(
+            timeout=settings.RAGAS_LLM_TIMEOUT,
+            max_retries=settings.RAGAS_RUN_MAX_RETRIES,
+            max_wait=settings.RAGAS_RUN_MAX_WAIT,
+            max_workers=settings.RAGAS_RUN_MAX_WORKERS,
+        )
+    except Exception:
+        return None
+
+
+def get_ragas_batch_size() -> Optional[int]:
+    settings = get_project_settings()
+    batch_size = int(settings.RAGAS_BATCH_SIZE or 0)
+    return batch_size if batch_size > 0 else None
 
 
 def get_ragas_embeddings() -> Any:

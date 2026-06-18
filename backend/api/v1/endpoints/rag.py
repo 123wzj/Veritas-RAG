@@ -131,6 +131,8 @@ async def _generate_sse_from_graph(
 
         final_answer = None
         final_citations = []
+        final_confidence = 0
+        final_state = None
         emitted_event_count = 0
 
         async for event in run_agentic_rag(
@@ -159,39 +161,8 @@ async def _generate_sse_from_graph(
                 if state.get("final_answer"):
                     final_answer = state["final_answer"]
                     final_citations = state.get("citations", [])
-                    confidence = state.get("confidence", 0)
-
-                    assistant_msg = MessageTable(
-                        session_id=resolved_session_id,
-                        role="assistant",
-                        content=final_answer,
-                        citations=final_citations,
-                        token_count=len(final_answer),
-                    )
-                    db.add(assistant_msg)
-                    db.commit()
-
-                    db.query(SessionTable).filter(SessionTable.session_id == resolved_session_id).update(
-                        {
-                            "last_active": func.now(),
-                            "message_count": SessionTable.message_count + 1,
-                        }
-                    )
-                    db.commit()
-
-                    yield _format_sse(
-                        {
-                            "event": "answer.completed",
-                            "data": {
-                                "answer": final_answer,
-                                "citations": final_citations,
-                                "confidence": confidence,
-                                "latency_ms": int((time.time() - start_time) * 1000),
-                                "session_id": resolved_session_id,
-                            },
-                        }
-                    )
-                    return
+                    final_confidence = state.get("confidence", 0)
+                    final_state = state
 
                 if state.get("error"):
                     yield _format_sse(
@@ -204,6 +175,40 @@ async def _generate_sse_from_graph(
                         }
                     )
                     return
+
+        if final_answer:
+            assistant_msg = MessageTable(
+                session_id=resolved_session_id,
+                role="assistant",
+                content=final_answer,
+                citations=final_citations,
+                token_count=len(final_answer),
+            )
+            db.add(assistant_msg)
+            db.commit()
+
+            db.query(SessionTable).filter(SessionTable.session_id == resolved_session_id).update(
+                {
+                    "last_active": func.now(),
+                    "message_count": SessionTable.message_count + 1,
+                }
+            )
+            db.commit()
+
+            yield _format_sse(
+                {
+                    "event": "answer.completed",
+                    "data": {
+                        "answer": final_answer,
+                        "citations": final_citations,
+                        "confidence": final_confidence,
+                        "verification": (final_state or {}).get("verification"),
+                        "latency_ms": int((time.time() - start_time) * 1000),
+                        "session_id": resolved_session_id,
+                    },
+                }
+            )
+            return
 
         yield _format_sse(
             {

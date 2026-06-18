@@ -66,14 +66,16 @@ class Settings(BaseSettings):
     S3_REGION: str = "us-east-1"
 
     # ========== 模型配置 ==========
-    # LLM - OpenAI by default. Prefer OPENAI_* for new local config.
+    # LLM - OpenAI-compatible by default. Local values are loaded from the
+    # project root .env only, so backend/.env cannot accidentally override them.
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-5.4"
     OPENAI_BASE_URL: Optional[str] = "http://127.0.0.1:8317/v1"
     LLM_PROVIDER: str = "openai"
     LLM_API_KEY: str = ""
-    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_MODEL: str = "gpt-5.4"
     LLM_BASE_URL: Optional[str] = None
+    BASE_URL: Optional[str] = None
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 4096
 
@@ -116,7 +118,20 @@ class Settings(BaseSettings):
     # Agentic 配置
     MAX_REFLECTION_ROUNDS: int = 3
     MAX_TOOL_STEPS: int = 8
+    GRAPH_RECURSION_LIMIT: int = 50
     ENABLE_REFLECTION: bool = True
+
+    # RAGAS evaluation uses the same OpenAI-compatible endpoint, but a lower
+    # temperature and lower concurrency make judge-style JSON outputs steadier.
+    RAGAS_LLM_MODEL: Optional[str] = None
+    RAGAS_LLM_TEMPERATURE: float = 0.0
+    RAGAS_LLM_MAX_TOKENS: int = 2048
+    RAGAS_LLM_TIMEOUT: int = 180
+    RAGAS_LLM_MAX_RETRIES: int = 5
+    RAGAS_RUN_MAX_RETRIES: int = 5
+    RAGAS_RUN_MAX_WAIT: int = 30
+    RAGAS_RUN_MAX_WORKERS: int = 4
+    RAGAS_BATCH_SIZE: int = 2
 
     # 联网增强配置
     WEB_SEARCH_ENABLED: bool = True
@@ -147,7 +162,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "data/uploads"
 
     class Config:
-        env_file = ".env"
+        env_file = str(BASE_DIR / ".env")
         case_sensitive = True
         extra = "ignore"
 
@@ -156,11 +171,14 @@ class Settings(BaseSettings):
         self.UPLOAD_DIR = _resolve_project_path(self.UPLOAD_DIR)
         if self.OPENAI_API_KEY and not self.LLM_API_KEY:
             self.LLM_API_KEY = self.OPENAI_API_KEY
-        if self.OPENAI_MODEL and (
-            not self.LLM_MODEL or self.LLM_MODEL.lower().startswith(("qwen", "dashscope", "tongyi"))
-        ):
+        if self.LLM_API_KEY and not self.OPENAI_API_KEY:
+            self.OPENAI_API_KEY = self.LLM_API_KEY
+        configured_fields = getattr(self, "model_fields_set", set())
+        if self.OPENAI_MODEL and "LLM_MODEL" not in configured_fields:
             self.LLM_MODEL = self.OPENAI_MODEL
-        if self.OPENAI_BASE_URL and not self.LLM_BASE_URL:
+        if self.BASE_URL:
+            self.LLM_BASE_URL = self.BASE_URL
+        elif self.OPENAI_BASE_URL and not self.LLM_BASE_URL:
             self.LLM_BASE_URL = self.OPENAI_BASE_URL
 
 

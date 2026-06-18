@@ -6,6 +6,7 @@
 import aiofiles
 import hashlib
 import shutil
+import uuid
 from pathlib import Path
 from datetime import datetime
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
@@ -35,10 +36,6 @@ UPLOAD_DIR = Path(settings.UPLOAD_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _sha256_bytes(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
 def _safe_upload_path(upload_dir: Path, filename: str, file_hash: str) -> Path:
     candidate = upload_dir / filename
     if not candidate.exists():
@@ -52,6 +49,28 @@ def _safe_upload_path(upload_dir: Path, filename: str, file_hash: str) -> Path:
         if not next_candidate.exists():
             return next_candidate
     raise RuntimeError("Unable to allocate a unique upload filename")
+
+
+async def _save_upload_to_temp(file: UploadFile, temp_path: Path) -> tuple[str, int]:
+    """Stream an upload to disk while enforcing the configured size limit."""
+    hasher = hashlib.sha256()
+    total_size = 0
+
+    async with aiofiles.open(temp_path, "wb") as f:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total_size += len(chunk)
+            if total_size > settings.MAX_UPLOAD_FILE_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File exceeds max upload size: {settings.MAX_UPLOAD_FILE_SIZE} bytes",
+                )
+            hasher.update(chunk)
+            await f.write(chunk)
+
+    return hasher.hexdigest(), total_size
 
 
 # ========== 知识库管理 ==========
@@ -330,9 +349,13 @@ async def upload_document(
         )
 
     file_path: Optional[Path] = None
+    temp_path: Optional[Path] = None
     try:
-        content = await file.read()
-        file_hash = _sha256_bytes(content)
+        user_upload_dir = UPLOAD_DIR / str(current_user.id) / str(kb_id)
+        user_upload_dir.mkdir(parents=True, exist_ok=True)
+
+        temp_path = user_upload_dir / f".upload_{uuid.uuid4().hex}.tmp"
+        file_hash, file_size = await _save_upload_to_temp(file, temp_path)
 
         duplicate_doc = db.query(DocumentTable).filter(
             DocumentTable.kb_id == kb_id,
@@ -366,15 +389,9 @@ async def upload_document(
                 },
             )
 
-        # 1. 保存文件到本地
-        user_upload_dir = UPLOAD_DIR / str(current_user.id) / str(kb_id)
-        user_upload_dir.mkdir(parents=True, exist_ok=True)
-
         file_path = _safe_upload_path(user_upload_dir, filename, file_hash)
-
-        # 异步保存文件
-        async with aiofiles.open(file_path, "wb") as f:
-            await f.write(content)
+        temp_path.replace(file_path)
+        temp_path = None
 
         # 2. 调用入库服务
         async def task_callback(status: str, progress: int, message: str):
@@ -397,6 +414,7 @@ async def upload_document(
             "doc_id": result["doc_id"],
             "filename": filename,
             "file_hash": file_hash,
+            "file_size": file_size,
             "kb_id": kb_id,
             "status": result["status"],
             "parent_count": result["parent_count"],
@@ -405,6 +423,8 @@ async def upload_document(
 
     except Exception as e:
         # 清理已上传的文件
+        if temp_path and temp_path.exists():
+            temp_path.unlink()
         if file_path and file_path.exists():
             file_path.unlink()
 

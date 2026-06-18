@@ -414,7 +414,21 @@ class HybridRetriever:
             fused.append(fused_result)
 
         fused.sort(key=lambda item: item.get("rrf_score", 0.0), reverse=True)
-        return fused
+        return self._deduplicate_ranked_results(fused)
+
+    @staticmethod
+    def _deduplicate_ranked_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep the highest-ranked candidate for each document-level result."""
+        deduped: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for result in results:
+            key = str(result.get("doc_id") or result.get("parent_id") or result.get("chunk_id") or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            deduped.append(result)
+        return deduped
 
     def _parent_backfill_sync(
         self,
@@ -449,7 +463,7 @@ class HybridRetriever:
                     enriched["parent_page_no"] = parent.page_no
                     enriched["parent_token_count"] = parent.token_count
                 backfilled.append(enriched)
-            return backfilled
+            return self._deduplicate_ranked_results(backfilled)
         finally:
             db.close()
 

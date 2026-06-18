@@ -9,6 +9,28 @@ from backend.graph.state.state import RAGState
 from backend.services.web_search.search_providers import web_search_service
 
 
+def _close_web_attempt(
+    sub_query_plans: List[Dict[str, Any]],
+    error: str | None = None,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    updated_plans: List[Dict[str, Any]] = []
+    all_evidence: List[Dict[str, Any]] = []
+
+    for plan in sub_query_plans:
+        current_plan = plan.copy()
+        evidence = list(current_plan.get("selected_evidence") or [])
+        if current_plan.get("need_web_search"):
+            current_plan["need_web_search"] = False
+            current_plan["need_retrieval"] = False
+            current_plan["evidence_sufficient"] = len(evidence) > 0
+            if error:
+                current_plan["web_search_error"] = error
+        updated_plans.append(current_plan)
+        all_evidence.extend(evidence)
+
+    return updated_plans, all_evidence
+
+
 async def web_search(state: RAGState) -> Dict[str, Any]:
     """
     当知识库证据不足且允许联网时，对未覆盖的子问题分别联网补充证据。
@@ -18,7 +40,18 @@ async def web_search(state: RAGState) -> Dict[str, Any]:
     sub_query_plans = state.get("sub_query_plans") or []
 
     if not web_enabled:
+        updated_plans, all_evidence = _close_web_attempt(
+            sub_query_plans,
+            error="web_search_not_enabled",
+        )
         return {
+            "sub_query_plans": updated_plans,
+            "selected_evidence": all_evidence,
+            "evidence_sufficient": bool(updated_plans) and all(
+                (plan.get("selected_evidence") or []) or plan.get("route_type") == "chat"
+                for plan in updated_plans
+            ),
+            "need_web_search": False,
             "events": events + [{
                 "event": "websearch.skipped",
                 "data": {"reason": "not_enabled"},
@@ -58,8 +91,8 @@ async def web_search(state: RAGState) -> Dict[str, Any]:
             seen_urls = set()
 
             for query in search_queries[:3]:
-                results = await web_search_service.search_with_snippets(query=query, max_results=4)
                 search_count += 1
+                results = await web_search_service.search_with_snippets(query=query, max_results=4)
                 for result in results:
                     url = result.get("url") or f"{query}:{result.get('title')}"
                     if url in seen_urls:
@@ -125,6 +158,18 @@ async def web_search(state: RAGState) -> Dict[str, Any]:
             "event": "websearch.failed",
             "data": {"error": str(e)},
         })
+        updated_plans, all_evidence = _close_web_attempt(
+            sub_query_plans,
+            error=str(e),
+        )
         return {
+            "sub_query_plans": updated_plans,
+            "selected_evidence": all_evidence,
+            "evidence_sufficient": bool(updated_plans) and all(
+                (plan.get("selected_evidence") or []) or plan.get("route_type") == "chat"
+                for plan in updated_plans
+            ),
+            "used_web_search": True,
+            "need_web_search": False,
             "events": events,
         }

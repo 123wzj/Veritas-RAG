@@ -2,6 +2,15 @@
 
 当前项目原来已有 `mteb/T2Retrieval` 检索阶段评估，现在新增 `backend/evaluation/run_ragas_answer_eval.py`，用于对当前系统的端到端 RAG 答案生成阶段做 RAGAS 评估。
 
+简单说：
+
+```text
+T2Retrieval 看“证据找没找对”
+RAGAS 看“最后答案答得靠不靠谱”
+```
+
+这两个评估不要混在一起看。检索好，不代表答案一定好；答案差，也不一定都是检索的问题。
+
 ## 1. 评估脚本做什么
 
 脚本会按下面流程执行：
@@ -66,45 +75,71 @@ cd backend
 pip install -r requirements.txt
 ```
 
-RAGAS 会调用评估 LLM。当前脚本复用项目里的 `graph.llm_factory.get_llm()`，也就是 `.env` / `core.config.py` 中的 OpenAI-compatible 配置。
+RAGAS 会调用评估 LLM。当前项目只从根目录 `.env` 读取本地配置：
+
+```text
+.env
+```
+
+不要再使用：
+
+```text
+backend/.env
+```
+
+原因很简单：两份 `.env` 容易互相覆盖。之前就出现过 `backend/.env` 把模型覆盖成错误模型的问题，所以现在统一只保留根目录 `.env`。
+
+普通 RAG 生成使用：
+
+```text
+LLM_MODEL
+LLM_BASE_URL
+LLM_API_KEY
+```
+
+RAGAS evaluator 也走同一个 OpenAI-compatible 服务，但脚本里给它单独加了更稳的评估配置：
+
+```text
+RAGAS_LLM_TEMPERATURE=0.0
+RAGAS_BATCH_SIZE=2
+RAGAS_RUN_MAX_WORKERS=4
+RAGAS_RUN_MAX_RETRIES=5
+```
+
+大白话：RAGAS 打分需要模型稳定输出结构化判断，所以温度要低，并发不要太高。
 
 ## 4. 运行评估
 
-先确保你已经有一个可用知识库 `kb_id`，其中已导入业务文档或 T2Retrieval 文档。
+先确保你已经有一个可用知识库 `kb_id`，其中已导入业务文档或 HotpotQA 文档。
 
 运行：
 
 ```bash
-cd backend
-python evaluation/run_ragas_answer_eval.py --input ../data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --user-id 1 --top-k 6
+D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --user-id 1 --top-k 6
 ```
 
 如果想只收集当前 RAG 生成结果，不调用 RAGAS：
 
 ```bash
-cd backend
-python evaluation/run_ragas_answer_eval.py --input ../data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --collect-only
+D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --collect-only
 ```
 
 如果要启用联网增强：
 
 ```bash
-cd backend
-python evaluation/run_ragas_answer_eval.py --input ../data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --web-enabled
+D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --web-enabled
 ```
 
 限制样本数量：
 
 ```bash
-cd backend
-python evaluation/run_ragas_answer_eval.py --input ../data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --limit 20
+D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --limit 20
 ```
 
 指定指标：
 
 ```bash
-cd backend
-python evaluation/run_ragas_answer_eval.py --input ../data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --metrics faithfulness,answer_relevancy,context_precision,context_recall,answer_correctness
+D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --metrics faithfulness,answer_relevancy,context_precision,context_recall,answer_correctness
 ```
 
 ## 5. 输出报告
@@ -176,7 +211,41 @@ data/evaluation/reports/ragas_answer_eval_kb{kb_id}_{timestamp}.json
 
 上线前建议固定一份 baseline 报告。后续改 chunk、embedding、reranker、prompt、反思阈值时，都用同一批样本重跑，比较 RAGAS 分数、延迟和失败样本。
 
-## 8. 使用专门的生成评估数据集 HotpotQA
+## 8. 当前项目已经验证过什么
+
+当前已经用 HotpotQA 200 条样本中的前 20 条做过稳定性回归：
+
+```text
+collect-only
+sample_count=20
+success_count=20
+recursion_errors=0
+report=data/evaluation/reports/ragas_answer_eval_kb7_20260618_114555.json
+```
+
+这说明当前 RAG 图流程已经能收口，不再出现之前那种 `Recursion limit of 25 reached`。
+
+也跑过 5 条完整 RAGAS，RAGAS evaluator 能稳定出分，并且明细没有空值：
+
+```text
+sample_count=5
+success_count=5
+faithfulness=0.7813
+answer_relevancy=0.3452
+llm_context_precision_with_reference=0.4400
+context_recall=1.0000
+answer_correctness=0.2576
+report=data/evaluation/reports/ragas_answer_eval_kb7_20260618_122319.json
+```
+
+注意：这 5 条只是 smoke test，不要把它当成最终质量结论。它主要证明：
+
+- RAG 主流程能跑完。
+- recursion limit 问题消失。
+- RAGAS evaluator LLM 能连接并出分。
+- RAGAS 明细没有空值。
+
+## 9. 使用专门的生成评估数据集 HotpotQA
 
 如果不想用自建样本，也不要继续拿纯检索数据集硬凑答案评估，可以使用 HotpotQA。HotpotQA 每条样本包含：
 
@@ -198,10 +267,10 @@ data/evaluation/reports/ragas_answer_eval_kb{kb_id}_{timestamp}.json
 backend/evaluation/import_hotpotqa_dataset.py
 ```
 
-安装/确认依赖后，用 `cook-rag-1` 环境导入少量样本：
+安装/确认依赖后，用 `cook-rag-1` 环境导入样本：
 
 ```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/import_hotpotqa_dataset.py --limit-examples 20 --user-id 1 --clean-existing
+D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/import_hotpotqa_dataset.py --limit-examples 200 --user-id 1 --clean-existing
 ```
 
 脚本会：
@@ -215,24 +284,47 @@ D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/import_hotpo
 data/evaluation/hotpotqa_ragas_samples.jsonl
 ```
 
-导入完成后会输出 `kb_id`，例如：
+导入完成后会输出 `kb_id`，例如当前环境是：
 
 ```text
-kb_id=6
+kb_id=7
 sample_output=data/evaluation/hotpotqa_ragas_samples.jsonl
+sample_count=200
 ```
 
 然后运行 RAGAS：
 
 ```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/hotpotqa_ragas_samples.jsonl --kb-id 6 --user-id 1 --top-k 6
+D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/hotpotqa_ragas_samples.jsonl --kb-id 7 --user-id 1 --top-k 6 --limit 5
 ```
 
-注意：RAGAS 和当前 RAG 生成链路都会调用项目配置里的 LLM。当前项目默认指向：
+## 10. 当前 HotpotQA 数据集够不够
+
+当前这个 HotpotQA 数据集适合继续用，但只能作为“技术回归基准”，不建议作为唯一企业评估集。
+
+它适合测：
+
+- 多跳问题拆解。
+- 证据是否找全。
+- 答案是否忠实于证据。
+- Reflection 是否会失控。
+- RAGAS 链路是否能稳定出分。
+
+它不适合单独证明企业落地效果，因为它主要是英文百科问题，和真实企业知识库差别很大。
+
+企业落地还要补一份业务 QA 评估集，至少覆盖：
+
+- 中文业务问法。
+- 文档里找得到答案的问题。
+- 文档里找不到答案的问题。
+- 权限隔离问题。
+- 表格、数字、日期、版本差异问题。
+- 多文档综合问题。
+- 闲聊、联网、知识库、hybrid 路由问题。
+
+推荐结论：
 
 ```text
-OPENAI_BASE_URL=http://127.0.0.1:8317/v1
-OPENAI_MODEL=gpt-5.4
+HotpotQA 继续保留，用来做固定回归。
+真正要看企业效果，还要建设自己的业务 QA 集。
 ```
-
-如果这个本地 OpenAI-compatible 服务没有启动，报告会生成，但 RAGAS 指标会是 `nan`，日志里会出现 `APIConnectionError: Connection error`。这时需要先启动本地模型服务，或把 `.env` 里的 `OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL` 改成可访问的评估模型。

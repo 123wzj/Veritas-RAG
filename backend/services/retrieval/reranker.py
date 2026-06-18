@@ -108,6 +108,7 @@ class BGEReranker(BaseReranker):
             reranked_docs.append(item)
 
         reranked_docs.sort(key=lambda item: item.get("rerank_score", 0.0), reverse=True)
+        reranked_docs = _deduplicate_ranked_documents(reranked_docs)
         return reranked_docs[:top_k] if top_k else reranked_docs
 
     @staticmethod
@@ -152,6 +153,7 @@ class SimpleReranker(BaseReranker):
             reranked.append(item)
 
         reranked.sort(key=lambda item: item.get("rerank_score", 0.0), reverse=True)
+        reranked = _deduplicate_ranked_documents(reranked)
         return reranked[:top_k] if top_k else reranked
 
 
@@ -192,6 +194,19 @@ class LazyReranker(BaseReranker):
 
 
 reranker = LazyReranker()
+
+
+def _deduplicate_ranked_documents(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for document in documents:
+        key = str(document.get("doc_id") or document.get("parent_id") or document.get("chunk_id") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(document)
+    return deduped
 
 
 def _use_fp16_on_cuda(device: str) -> bool:
