@@ -57,6 +57,7 @@ Desktop.ini
 
 # Local assistant/tooling state
 .agents/
+.codex/
 .claude/
 .impeccable.md
 skills-lock.json

@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from backend.graph.state.state import RAGState
 from backend.graph.llm_factory import get_llm
 from backend.services.retrieval.hybrid import hybrid_retriever
+from backend.services.retrieval.diversity import select_diverse_results
 from backend.services.retrieval.reranker import reranker
 
 
@@ -132,9 +133,16 @@ async def rerank_candidates(state: RAGState) -> Dict[str, Any]:
                 query=query,
                 documents=[doc.copy() for doc in retrieved_docs],
                 top_k=max(top_k * 2, 8),
+                max_per_doc=3,
+                max_per_parent=1,
             )
         except Exception:
-            ranked = [doc.copy() for doc in retrieved_docs[:max(top_k * 2, 8)]]
+            ranked = select_diverse_results(
+                [doc.copy() for doc in retrieved_docs],
+                top_k=max(top_k * 2, 8),
+                max_per_doc=3,
+                max_per_parent=1,
+            )
 
         for idx, doc in enumerate(ranked):
             doc.setdefault("rank", idx)
@@ -170,14 +178,14 @@ async def pack_evidence(state: RAGState) -> Dict[str, Any]:
         current_plan = plan.copy()
         reranked_docs = current_plan.get("reranked_docs") or []
         evidence: List[Dict[str, Any]] = []
-        seen_keys = set()
+        packing_candidates = select_diverse_results(
+            reranked_docs,
+            top_k=top_k,
+            max_per_doc=3,
+            max_per_parent=1,
+        )
 
-        for doc in reranked_docs:
-            dedupe_key = (doc.get("doc_id"), doc.get("parent_id") or doc.get("chunk_id"))
-            if dedupe_key in seen_keys:
-                continue
-            seen_keys.add(dedupe_key)
-
+        for doc in packing_candidates:
             parent_content = doc.get("parent_content") or ""
             child_content = doc.get("content") or ""
             snippet = parent_content[:1200] if parent_content else child_content[:600]

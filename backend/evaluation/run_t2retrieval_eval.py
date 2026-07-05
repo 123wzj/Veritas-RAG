@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dense-top-k", type=int, default=50)
     parser.add_argument("--bm25-top-k", type=int, default=50)
     parser.add_argument("--rerank-candidates", type=int, default=50)
+    parser.add_argument("--max-per-doc", type=int, default=3)
+    parser.add_argument("--max-per-parent", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--skip-reranker", action="store_true")
     return parser.parse_args()
@@ -133,6 +135,8 @@ async def main_async() -> None:
                 query=query,
                 documents=rrf_results[: args.rerank_candidates],
                 top_k=args.top_k,
+                max_per_doc=args.max_per_doc,
+                max_per_parent=args.max_per_parent,
             )
             result_sets["rerank"] = [item.get("doc_id") for item in reranked]
 
@@ -163,6 +167,8 @@ async def main_async() -> None:
             "dense_top_k": args.dense_top_k,
             "bm25_top_k": args.bm25_top_k,
             "rerank_candidates": args.rerank_candidates,
+            "max_per_doc": args.max_per_doc,
+            "max_per_parent": args.max_per_parent,
             "skip_reranker": args.skip_reranker,
             "seed": args.seed,
         },

@@ -10,9 +10,11 @@ from typing import Any, Dict, List, Optional
 try:
     from core.hf_cache import HF_HOME_PATH, configure_hf_cache
     from core.config import settings
+    from services.retrieval.diversity import select_diverse_results
 except ImportError:  # pragma: no cover - fallback for package-style imports
     from backend.core.hf_cache import HF_HOME_PATH, configure_hf_cache
     from backend.core.config import settings
+    from backend.services.retrieval.diversity import select_diverse_results
 
 configure_hf_cache()
 
@@ -24,6 +26,8 @@ class BaseReranker(ABC):
         query: str,
         documents: List[Dict[str, Any]],
         top_k: Optional[int] = None,
+        max_per_doc: Optional[int] = 3,
+        max_per_parent: Optional[int] = 1,
     ) -> List[Dict[str, Any]]:
         pass
 
@@ -32,6 +36,8 @@ class BaseReranker(ABC):
         query: str,
         documents: List[Dict[str, Any]],
         top_k: Optional[int] = None,
+        max_per_doc: Optional[int] = 3,
+        max_per_parent: Optional[int] = 1,
     ) -> List[Dict[str, Any]]:
         try:
             loop = asyncio.get_event_loop()
@@ -39,11 +45,14 @@ class BaseReranker(ABC):
                 import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, self.rerank_async(query, documents, top_k))
+                    future = pool.submit(
+                        asyncio.run,
+                        self.rerank_async(query, documents, top_k, max_per_doc, max_per_parent),
+                    )
                     return future.result()
-            return asyncio.run(self.rerank_async(query, documents, top_k))
+            return asyncio.run(self.rerank_async(query, documents, top_k, max_per_doc, max_per_parent))
         except RuntimeError:
-            return asyncio.run(self.rerank_async(query, documents, top_k))
+            return asyncio.run(self.rerank_async(query, documents, top_k, max_per_doc, max_per_parent))
 
 
 class BGEReranker(BaseReranker):
@@ -76,15 +85,22 @@ class BGEReranker(BaseReranker):
         query: str,
         documents: List[Dict[str, Any]],
         top_k: Optional[int] = None,
+        max_per_doc: Optional[int] = 3,
+        max_per_parent: Optional[int] = 1,
     ) -> List[Dict[str, Any]]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self.rerank(query, documents, top_k))
+        return await loop.run_in_executor(
+            None,
+            lambda: self.rerank(query, documents, top_k, max_per_doc, max_per_parent),
+        )
 
     def rerank(
         self,
         query: str,
         documents: List[Dict[str, Any]],
         top_k: Optional[int] = None,
+        max_per_doc: Optional[int] = 3,
+        max_per_parent: Optional[int] = 1,
     ) -> List[Dict[str, Any]]:
         if not documents:
             return []
@@ -108,8 +124,12 @@ class BGEReranker(BaseReranker):
             reranked_docs.append(item)
 
         reranked_docs.sort(key=lambda item: item.get("rerank_score", 0.0), reverse=True)
-        reranked_docs = _deduplicate_ranked_documents(reranked_docs)
-        return reranked_docs[:top_k] if top_k else reranked_docs
+        return select_diverse_results(
+            reranked_docs,
+            top_k=top_k,
+            max_per_doc=max_per_doc,
+            max_per_parent=max_per_parent,
+        )
 
     @staticmethod
     def _prepare_document(document: Dict[str, Any]) -> str:
@@ -133,6 +153,8 @@ class SimpleReranker(BaseReranker):
         query: str,
         documents: List[Dict[str, Any]],
         top_k: Optional[int] = None,
+        max_per_doc: Optional[int] = 3,
+        max_per_parent: Optional[int] = 1,
     ) -> List[Dict[str, Any]]:
         import re
 
@@ -153,8 +175,12 @@ class SimpleReranker(BaseReranker):
             reranked.append(item)
 
         reranked.sort(key=lambda item: item.get("rerank_score", 0.0), reverse=True)
-        reranked = _deduplicate_ranked_documents(reranked)
-        return reranked[:top_k] if top_k else reranked
+        return select_diverse_results(
+            reranked,
+            top_k=top_k,
+            max_per_doc=max_per_doc,
+            max_per_parent=max_per_parent,
+        )
 
 
 def get_reranker() -> BaseReranker:
@@ -181,32 +207,23 @@ class LazyReranker(BaseReranker):
         query: str,
         documents: List[Dict[str, Any]],
         top_k: Optional[int] = None,
+        max_per_doc: Optional[int] = 3,
+        max_per_parent: Optional[int] = 1,
     ) -> List[Dict[str, Any]]:
-        return await self.instance.rerank_async(query, documents, top_k)
+        return await self.instance.rerank_async(query, documents, top_k, max_per_doc, max_per_parent)
 
     def rerank(
         self,
         query: str,
         documents: List[Dict[str, Any]],
         top_k: Optional[int] = None,
+        max_per_doc: Optional[int] = 3,
+        max_per_parent: Optional[int] = 1,
     ) -> List[Dict[str, Any]]:
-        return self.instance.rerank(query, documents, top_k)
+        return self.instance.rerank(query, documents, top_k, max_per_doc, max_per_parent)
 
 
 reranker = LazyReranker()
-
-
-def _deduplicate_ranked_documents(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    deduped: List[Dict[str, Any]] = []
-    seen: set[str] = set()
-    for document in documents:
-        key = str(document.get("doc_id") or document.get("parent_id") or document.get("chunk_id") or "")
-        if key and key in seen:
-            continue
-        if key:
-            seen.add(key)
-        deduped.append(document)
-    return deduped
 
 
 def _use_fp16_on_cuda(device: str) -> bool:

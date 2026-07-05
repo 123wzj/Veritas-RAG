@@ -19,12 +19,14 @@ try:
     from embeddings.embeddings import get_embeddings
     from embeddings.sparse import get_sparse_embedding
     from models.database.knowledge import ChunkTable
+    from services.retrieval.diversity import cap_by_group, merge_by_chunk_id
 except ImportError:  # pragma: no cover - fallback for package-style imports
     from backend.db.chroma.connection import chroma_client
     from backend.db.mysql.connection import SessionLocal
     from backend.embeddings.embeddings import get_embeddings
     from backend.embeddings.sparse import get_sparse_embedding
     from backend.models.database.knowledge import ChunkTable
+    from backend.services.retrieval.diversity import cap_by_group, merge_by_chunk_id
 
 
 class HybridRetriever:
@@ -113,12 +115,13 @@ class HybridRetriever:
             dense_groups=all_dense_results,
             sparse_groups=all_sparse_results,
         )
+        candidate_limit = min(max(desired_top_k * 5, 50), 100)
         backfilled_results = await asyncio.to_thread(
             self._parent_backfill_sync,
-            fused_results[: desired_top_k * 4],
+            fused_results[:candidate_limit],
             kb_id,
         )
-        return backfilled_results[: desired_top_k * 3]
+        return backfilled_results[:candidate_limit]
 
     def _build_query_plan(
         self,
@@ -378,57 +381,15 @@ class HybridRetriever:
         sparse_groups: List[List[Dict[str, Any]]],
         k: int = 60,
     ) -> List[Dict[str, Any]]:
-        scores: Dict[str, float] = {}
-        merged: Dict[str, Dict[str, Any]] = {}
-
-        def update_group(
-            group_results: List[List[Dict[str, Any]]],
-            retrieval_weight: float,
-        ) -> None:
-            for results in group_results:
-                for rank, result in enumerate(results):
-                    chunk_id = result["chunk_id"]
-                    query_weight = float(result.get("query_weight", 1.0))
-                    weighted_rrf = retrieval_weight * query_weight / (k + rank + 1)
-                    scores[chunk_id] = scores.get(chunk_id, 0.0) + weighted_rrf
-
-                    existing = merged.get(chunk_id)
-                    if not existing:
-                        merged[chunk_id] = result.copy()
-                    else:
-                        existing["score"] = max(existing.get("score", 0.0), result.get("score", 0.0))
-                        existing["match_query"] = existing.get("match_query") or result.get("match_query")
-                        existing["retrieval_type"] = (
-                            existing.get("retrieval_type")
-                            if existing.get("retrieval_type") == result.get("retrieval_type")
-                            else "hybrid"
-                        )
-
-        update_group(dense_groups, retrieval_weight=1.0)
-        update_group(sparse_groups, retrieval_weight=0.9)
-
-        fused: List[Dict[str, Any]] = []
-        for chunk_id, result in merged.items():
-            fused_result = result.copy()
-            fused_result["rrf_score"] = round(scores.get(chunk_id, 0.0), 8)
-            fused.append(fused_result)
-
-        fused.sort(key=lambda item: item.get("rrf_score", 0.0), reverse=True)
-        return self._deduplicate_ranked_results(fused)
-
-    @staticmethod
-    def _deduplicate_ranked_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Keep the highest-ranked candidate for each document-level result."""
-        deduped: List[Dict[str, Any]] = []
-        seen: set[str] = set()
-        for result in results:
-            key = str(result.get("doc_id") or result.get("parent_id") or result.get("chunk_id") or "")
-            if key and key in seen:
-                continue
-            if key:
-                seen.add(key)
-            deduped.append(result)
-        return deduped
+        ranked_groups = [
+            (results, 1.0)
+            for results in dense_groups
+        ] + [
+            (results, 0.9)
+            for results in sparse_groups
+        ]
+        fused = merge_by_chunk_id(ranked_groups, k=k)
+        return cap_by_group(fused, max_per_doc=5, max_per_parent=2, max_per_chunk=1)
 
     def _parent_backfill_sync(
         self,
@@ -463,7 +424,7 @@ class HybridRetriever:
                     enriched["parent_page_no"] = parent.page_no
                     enriched["parent_token_count"] = parent.token_count
                 backfilled.append(enriched)
-            return self._deduplicate_ranked_results(backfilled)
+            return cap_by_group(backfilled, max_per_doc=5, max_per_parent=2, max_per_chunk=1)
         finally:
             db.close()
 

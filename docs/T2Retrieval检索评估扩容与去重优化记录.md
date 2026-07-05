@@ -97,9 +97,9 @@ child_chunks: 4476
 
 ## 4. 优化是怎么做的
 
-这次没有改 embedding、BM25、RRF 权重，也没有换 reranker 模型。
+这轮评估当时没有改 embedding、BM25、RRF 权重，也没有换 reranker 模型。
 
-只做了一件事：
+当时只做了一件事：
 
 ```text
 对排序后的候选结果做去重，让 top10 尽量来自不同文档。
@@ -122,14 +122,208 @@ doc_id -> parent_id -> chunk_id
 
 | 文件 | 优化点 |
 |---|---|
-| `backend/services/retrieval/hybrid.py` | RRF 融合后去重，父块回补后再去重。 |
-| `backend/services/retrieval/reranker.py` | BGE reranker 和 Simple reranker 排序后去重。 |
+| `backend/services/retrieval/hybrid.py` | 评估时曾在 RRF 融合后、父块回补后做硬去重；当前实现已调整为 rerank 前 soft cap。 |
+| `backend/services/retrieval/reranker.py` | 评估时曾在 BGE reranker 和 Simple reranker 排序后硬去重；当前实现已调整为可配置 diversity selection。 |
+
+具体到每一步，是这样处理的：
+
+### 4.1 Dense / Sparse 原始召回阶段
+
+原始召回阶段不急着做文档级去重。
+
+这里不是 “Dense 召回 1 条、Sparse 召回 1 条”。
+
+实际链路里，Dense 和 Sparse 都会各自召回一批 child chunk；如果 query rewrite / decomposition 产生了多条 retrieval query，每条 query 又会分别走 Dense 和 Sparse。也就是说，候选数量大致来自：
+
+```text
+query 数量 × 2 路检索 × 每路 topN child chunks
+```
+
+Dense 和 Sparse 都是先召回 child chunk：
+
+- Dense 从 Chroma 里按向量相似度召回 `is_parent=false` 的子块。
+- Sparse 从 MySQL 里加载当前知识库的 child 正文，按 lexical sparse 分数召回子块。
+- 每一路都会返回多个 child，所以同一篇文档、同一个 parent 下面的多个 child 可能同时被召回。
+
+原因是第一阶段目标是“尽量别漏”。如果在召回阶段过早按 `doc_id` 去重，可能会把同一文档里更匹配的后续 child 提前删掉，影响后面的 RRF 融合和 rerank 判断。
+
+重复来源主要有两类：
+
+1. 同一篇文档被切成多个 child，多个 child 都和 query 相关。
+2. 多 query / Dense / Sparse 交叉命中，同一个 child 或同一篇文档反复出现。
+
+### 4.2 RRF 融合内部先按 `chunk_id` 聚合
+
+RRF 融合时，第一层处理是按 `chunk_id` 合并 Dense / Sparse / 多 query 的同一个 child chunk。
+
+也就是说，如果同一个 `chunk_id` 同时被 Dense 和 Sparse 命中，或者被多个 query variant 命中，不会生成多条候选，而是把它们的 RRF 分数累加到同一个候选上。
+
+这一层可以理解为“子块级合并”，解决的是“同一个 child chunk 被多路检索重复命中”的问题。
+
+例如：
+
+```text
+query A 的 Dense 第 3 名命中 chunk_001
+query A 的 Sparse 第 8 名也命中 chunk_001
+query B 的 Dense 第 5 名又命中 chunk_001
+```
+
+RRF 不会保留 3 条 `chunk_001`，而是只保留 1 条 `chunk_001`，并把三次命中的 RRF 贡献加到这个 chunk 上。这样做的含义不是简单删除重复子块，而是认为“同一个子块被多路、多 query 反复命中，说明它更稳定相关”，所以给它更高融合分。
+
+但它还不是文档级去重。因为同一篇文档下面可能有多个不同 `chunk_id`，它们在这一层仍然会同时存在。
+
+例如同一个 `chunk_id`：
+
+```
+Dense 第 3 名命中
+Sparse 第 8 名命中
+Query variant B 的 Dense 第 5 名命中
+```
+
+RRF 会变成：
+
+```
+rrf_score =
+1 / (k + 3)
++ 1 / (k + 8)
++ 1 / (k + 5)
+```
+
+如果有权重，也可以是：
+
+```
+rrf_score =
+dense_weight  * 1 / (k + dense_rank)
++ sparse_weight * 1 / (k + sparse_rank)
++ query_weight  * 1 / (k + variant_rank)
+```
+
+所以含义是：**同一个 chunk 被多路、多 query 反复命中，说明它稳定相关，应该排名更靠前。**
+
+### 4.3 RRF 排序后不再直接做 doc 级硬去重
+
+RRF 分数算完并排序后，不应该立刻每个 `doc_id` 只保留 1 条。
+
+原因是 RRF 仍然处在 rerank 前的候选准备阶段。如果这一步过早按文档硬去重，可能会删掉同一篇文档里更适合回答的其他 parent / child，尤其是长文档、多章节文档和多跳问题。
+
+当前推荐做法是 soft cap：
+
+```text
+每个 doc 最多保留 3～5 条
+每个 parent 最多保留 1～2 条
+总候选控制在 50～100 条进入 rerank
+```
+
+也就是说，RRF 后不是不控重复，而是不做“一篇文档只留一条”的硬去重。
+
+当前代码中使用：
+
+```python
+cap_by_group(fused, max_per_doc=5, max_per_parent=2, max_per_chunk=1)
+```
+
+含义是：
+
+1. 同一个 `chunk_id` 仍然只保留 1 条。
+2. 同一个 `parent_id` 最多保留 2 条，避免一个父块下多个相似 child 占太多位置。
+3. 同一个 `doc_id` 最多保留 5 条，保留长文档里多个相关父块进入 rerank 的机会。
+
+### 4.4 父块回补后继续 soft cap
+
+RRF 后拿到的仍然是 child 候选。父块回补做的是：
+
+```text
+根据 child.parent_id 到 MySQL 查 parent chunk
+把 parent_content / parent_title / parent_section_path 等补回候选
+```
+
+父块回补不是“重新检索父块”，也不是“拿完整文档去重”。它只是把子块命中的上层上下文补回来，供 reranker 和 evidence packing 使用。
+
+回补后仍然使用 soft cap，而不是 doc 级硬去重：
+
+```python
+cap_by_group(backfilled, max_per_doc=5, max_per_parent=2, max_per_chunk=1)
+```
+
+这一步是第二道候选控制：
+
+- 如果多个 child 指向同一个 parent，不让它们无限占位。
+- 如果同一篇文档多个 parent 都相关，允许保留多个 parent 进入 rerank。
+- 控制进入 rerank 的候选规模，避免 reranker 成本过高。
+
+### 4.5 Rerank 排序后再做最终多样性选择
+
+Reranker 会对候选重新打分，然后按 `rerank_score` 降序排序。
+
+最终多样性选择应该放在 rerank 后，因为这时模型已经判断过“哪条 parent / child 更适合当前 query”。
+
+当前不再保留“文档级评估每个 doc 只留 1 条”的配置。
+
+原因是这个配置主要服务于文档级评估指标，会让 top10 看起来更“覆盖不同文档”，但真实 QA 场景里不一定合理。长文档、多章节、多跳问题经常需要同一篇文档里的多个 parent 共同提供证据。
+
+当前 RAG 问答节点和 T2Retrieval 重新评估都统一使用普通 QA 策略：
+
+```python
+select_diverse_results(reranked, top_k=top_k, max_per_doc=3, max_per_parent=1)
+```
+
+为了避免 cap 太严格导致 topK 填不满，`select_diverse_results` 现在是三段式 fallback：
+
+```text
+第一轮：按 max_per_doc / max_per_parent 严格选择
+第二轮：如果不足 top_k，放宽 parent cap
+第三轮：如果还不足 top_k，再放宽 doc cap
+```
+
+这样正常情况下能控制同一文档、同一父块的冗余；极端 query 下也不会因为 diversity 规则过严导致结果数量不足。
+
+评估脚本也显式暴露并记录这两个参数：
+
+```text
+--max-per-doc 3
+--max-per-parent 1
+```
+
+后面重新跑检索指标时，就按这个真实 QA 口径评估，不再为了文档级指标强行每篇文档只保留一条。
+
+注意：这里所谓“文档多样性控制”不是拿完整文档内容去重，而是使用 chunk 元数据里的 `doc_id` 做来源文档约束。系统检索和 rerank 的对象仍然是 child / parent chunk。
+
+### 4.6 Evidence Packing 单独处理
+
+进入问答链路时，`pack_evidence` 还会做一层证据级去重：
+
+```python
+select_diverse_results(reranked_docs, top_k=top_k, max_per_doc=3, max_per_parent=1)
+```
+
+这层和前面 rerank 后的 diversity selection 目标不完全一样。
+
+RRF / rerank 阶段关注候选质量和多样性；Evidence Packing 阶段关注的是：
+
+- 减少 prompt 冗余
+- 控制 token budget
+- 保证证据覆盖
+
+所以 packing 阶段不应该走“每 doc 只留 1 条”。普通 QA 更适合每个 parent 最多 1 条、每个 doc 最多 2～3 条。
+
+所以完整链路可以理解为：
+
+```text
+Dense/Sparse 原始召回：允许多个 child 命中，保证召回率
+RRF 内部聚合：同一个 chunk_id 的多路命中合并加分
+RRF 排序后 soft cap：每 doc 3～5 条，每 parent 1～2 条
+父块回补：按 child.parent_id 补 parent 内容
+父块回补后 soft cap：继续控制候选规模
+Rerank：对 parent-enriched candidates 精排
+Rerank 后 final diversity selection：按场景控制 doc / parent 数量
+Evidence Packing：按 token budget 和 parent/doc 多样性选证据
+```
 
 为什么在这些位置做？
 
-- RRF 后去重：避免 dense 和 sparse 融合后，同一文档多次占位。
-- 父块回补后去重：避免不同 child chunk 回补到同一个 parent 后重复。
-- Rerank 后去重：避免精排模型把同一文档的多个相似 chunk 一起排到前面。
+- RRF 后 soft cap：避免过早删掉好 chunk，同时控制同一文档/父块过度占位。
+- 父块回补后 soft cap：补齐 parent 上下文后，再控制进入 rerank 的候选规模。
+- Rerank 后多样性选择：先让 reranker 判断相关性，再按场景控制最终 topK 多样性。
 
 这属于低风险优化：
 不改变召回模型，也不改变精排模型，只是把重复候选清理掉，让 top10 更有信息量。
@@ -138,7 +332,38 @@ doc_id -> parent_id -> chunk_id
 
 ## 5. 优化前后对比
 
-### RRF 对比
+本节分两组结果：
+
+1. 第一组是早期“doc 级硬去重”评估结果，用来证明重复文档确实是主要问题。
+2. 第二组是当前最新策略的重评结果，也就是 `RRF 后 soft cap + rerank 后 QA diversity selection`。
+
+当前代码已经进一步调整为：
+
+```text
+RRF 后 soft cap
+Rerank 后按场景做 final diversity selection
+```
+
+当前最新评估使用普通 QA 口径：
+
+```text
+--max-per-doc 3
+--max-per-parent 1
+```
+
+也就是允许同一篇长文档最多保留 3 条不同父块证据，但同一个 parent 默认只保留 1 条，避免同一章节重复占位。
+
+### 5.1 早期 doc 级硬去重结果
+
+这组结果来自早期策略：
+
+```text
+RRF / Rerank 后每个 doc 只保留 1 条
+```
+
+它能显著提升 T2Retrieval 这类文档级评估指标，但对真实 QA 不一定最合理，因为长文档、多章节问题可能需要同一文档里的多个 parent 共同提供证据。
+
+#### RRF 对比
 
 | 指标 | 优化前 | 优化后 | 变化 |
 |---|---:|---:|---:|
@@ -151,7 +376,7 @@ doc_id -> parent_id -> chunk_id
 
 RRF 的提升主要来自去重后 top10 能放进更多不同文档。
 
-### Rerank 对比
+#### Rerank 对比
 
 | 指标 | 优化前 | 优化后 | 变化 |
 |---|---:|---:|---:|
@@ -165,27 +390,116 @@ RRF 的提升主要来自去重后 top10 能放进更多不同文档。
 Rerank 提升最明显。
 优化前 rerank 容易把同一文档的相似 child chunk 一起排到前面；去重后，top10 覆盖了更多不同文档，所以 `recall@10` 和 `ndcg@10` 都明显提升。
 
+### 5.2 当前 soft cap + QA diversity 重评结果
+
+这组是当前代码策略的重新评估结果：
+
+```text
+Dense / Sparse 原始召回
+-> RRF 内部按 chunk_id 聚合
+-> RRF 后 soft cap：max_per_doc=5, max_per_parent=2
+-> Parent backfill / hydration
+-> backfill 后继续 soft cap
+-> Rerank
+-> Rerank 后 final diversity：max_per_doc=3, max_per_parent=1
+```
+
+评估命令：
+
+```powershell
+cd E:\PythonProject\Veritas-RAG\backend
+D:\Software\anaconda3\envs\cook-rag-1\python.exe evaluation\run_t2retrieval_eval.py --kb-id 8 --limit-queries 300 --top-k 10 --dense-top-k 50 --bm25-top-k 50 --rerank-candidates 50 --max-per-doc 3 --max-per-parent 1 --seed 42
+```
+
+报告文件：
+
+```text
+data/evaluation/reports/t2retrieval_eval_kb8_20260705_110946.json
+```
+
+#### 当前最新指标
+
+| 阶段 | `hit@10` | `mrr@10` | `ndcg@10` | `recall@10` |
+|---|---:|---:|---:|---:|
+| Dense | 0.9700 | 0.9526 | 0.8463 | 0.8432 |
+| BM25 / Sparse | 0.9233 | 0.8844 | 0.7245 | 0.7121 |
+| RRF | 0.9633 | 0.9305 | 0.8337 | 0.8447 |
+| Rerank | 0.9800 | 0.9527 | 0.9121 | 0.9126 |
+
+#### 和早期 doc 级硬去重的差异
+
+| 阶段 | 指标 | doc 级硬去重 | 当前 QA diversity | 变化 |
+|---|---|---:|---:|---:|
+| RRF | `hit@10` | 0.9667 | 0.9633 | -0.0034 |
+| RRF | `mrr@10` | 0.9323 | 0.9305 | -0.0018 |
+| RRF | `ndcg@10` | 0.8947 | 0.8337 | -0.0610 |
+| RRF | `recall@10` | 0.8975 | 0.8447 | -0.0528 |
+| Rerank | `hit@10` | 0.9767 | 0.9800 | +0.0033 |
+| Rerank | `mrr@10` | 0.9518 | 0.9527 | +0.0009 |
+| Rerank | `ndcg@10` | 0.9242 | 0.9121 | -0.0121 |
+| Rerank | `recall@10` | 0.9234 | 0.9126 | -0.0108 |
+
+这个结果符合预期：
+
+- doc 级硬去重对文档级评估最友好，所以 RRF 阶段的 `recall@10 / ndcg@10` 更高。
+- 当前 QA diversity 不再强制“每篇文档只留 1 条”，因此文档级覆盖指标会略低一些。
+- 但经过 rerank 后，当前策略的 `hit@10 / mrr@10` 反而略高，`recall@10 / ndcg@10` 只小幅低于硬去重。
+- 当前策略更贴近真实 QA，因为它允许同一篇长文档的多个不同 parent 进入最终证据候选。
+
+因此，后续默认建议使用当前 QA diversity 口径作为回归评估口径，而不是继续用 `max_per_doc=1` 的文档级硬去重口径。
+
 ---
 
 ## 6. 当前结论
 
-当前 retrieval 底座不是“搜不到”的问题。
+当前 retrieval 底座的主要问题不是“完全搜不到”。
 Dense 本身已经比较强，真正暴露出来的是：
 
 ```text
-Parent-Child 分块后，候选结果缺少文档级去重，
-导致融合和精排阶段重复文档太多。
+Parent-Child 分块后，同一文档 / 同一父块下的多个 child 很容易同时命中；
+如果后处理不控制多样性，融合和精排阶段会被重复候选占位。
 ```
 
-这次优化后：
+早期 doc 级硬去重实验说明了问题确实存在：
 
 - RRF 重复文档 query 数从 285 降到 0。
 - Rerank 重复文档 query 数从 290 降到 0。
 - Rerank `recall@10` 从 0.7624 提升到 0.9234。
 - Rerank `ndcg@10` 从 0.7431 提升到 0.9242。
 
-所以这次优化是有效的，而且是企业落地里很必要的一类优化：
-检索不只是“召回很多 chunk”，还要控制最终证据的多样性。
+但这个实验口径不应该作为真实 QA 的默认策略，因为 `max_per_doc=1` 会过早限制长文档、多章节问题的证据覆盖。
+
+当前更合理的默认方案是：
+
+```text
+RRF 内部继续按 chunk_id 聚合；
+RRF / 父块回补后用 soft cap 控制候选冗余；
+Rerank 后按 QA 口径做 final diversity selection；
+Evidence Packing 再按 token budget 做证据选择。
+```
+
+当前 QA diversity 重评结果为：
+
+| 阶段 | `hit@10` | `mrr@10` | `ndcg@10` | `recall@10` |
+|---|---:|---:|---:|---:|
+| RRF | 0.9633 | 0.9305 | 0.8337 | 0.8447 |
+| Rerank | 0.9800 | 0.9527 | 0.9121 | 0.9126 |
+
+和早期 doc 级硬去重相比，当前策略在文档级 `recall@10 / ndcg@10` 上略低，但更贴近真实问答：
+
+- 不再为了评估指标强制每篇文档只保留 1 条。
+- 允许同一篇长文档最多保留 3 条不同父块证据。
+- 同一 parent 默认只保留 1 条，避免同一章节重复占满上下文。
+- 通过 fallback 机制避免 cap 过严导致 topK 填不满。
+
+因此，后续检索层回归评估建议统一使用当前 QA diversity 口径：
+
+```text
+--max-per-doc 3
+--max-per-parent 1
+```
+
+这次优化的核心价值不是单纯把评估指标刷到最高，而是把检索结果从“召回很多相似 chunk”调整为“保留足够相关、足够多样、适合进入问答上下文的证据候选”。
 
 ---
 
