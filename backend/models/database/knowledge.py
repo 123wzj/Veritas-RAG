@@ -7,8 +7,8 @@ from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, Str
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.sql import func
 
-from db.mysql.connection import Base
-from models.schemas.knowledge import DocumentStatus, ModalityType
+from backend.db.mysql.connection import Base
+from backend.models.schemas.knowledge import DocumentStatus, ModalityType
 
 
 class KnowledgeBaseTable(Base):

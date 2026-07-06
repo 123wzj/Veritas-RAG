@@ -8,10 +8,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 from typing import Optional, List
 
-try:
-    from core.hf_cache import configure_hf_cache
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.core.hf_cache import configure_hf_cache
+from backend.core.hf_cache import configure_hf_cache
 
 
 configure_hf_cache()
@@ -66,14 +63,14 @@ class Settings(BaseSettings):
     S3_REGION: str = "us-east-1"
 
     # ========== 模型配置 ==========
-    # LLM - OpenAI-compatible by default. Local values are loaded from the
-    # project root .env only, so backend/.env cannot accidentally override them.
-    OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-5.4"
-    OPENAI_BASE_URL: Optional[str] = "http://127.0.0.1:8317/v1"
-    LLM_PROVIDER: str = "openai"
+    # LLM - DeepSeek via langchain-deepseek.
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_BASE_URL: Optional[str] = "https://api.deepseek.com"
+    DEEPSEEK_FLASH_MODEL: str = "deepseek-v4-flash"
+    DEEPSEEK_PRO_MODEL: str = "deepseek-v4-pro"
+    LLM_PROVIDER: str = "deepseek"
     LLM_API_KEY: str = ""
-    LLM_MODEL: str = "gpt-5.4"
+    LLM_MODEL: str = "deepseek-v4-pro"
     LLM_BASE_URL: Optional[str] = None
     BASE_URL: Optional[str] = None
     LLM_TEMPERATURE: float = 0.7
@@ -121,14 +118,33 @@ class Settings(BaseSettings):
     GRAPH_RECURSION_LIMIT: int = 50
     ENABLE_REFLECTION: bool = True
 
-    # RAGAS evaluation uses the same OpenAI-compatible endpoint, but a lower
+    # Context engineering and memory budgets.
+    CONTEXT_INPUT_TOKEN_BUDGET: int = 7000
+    CONTEXT_RECENT_TURNS: int = 3
+    CONTEXT_RECENT_TOKEN_BUDGET: int = 1200
+    CONTEXT_SESSION_SUMMARY_TOKEN_BUDGET: int = 800
+    CONTEXT_WORKING_MEMORY_TOKEN_BUDGET: int = 600
+    CONTEXT_LONG_TERM_TOKEN_BUDGET: int = 900
+    CONTEXT_EVIDENCE_TOKEN_BUDGET: int = 3200
+    MEMORY_LONG_TERM_CANDIDATE_LIMIT: int = 20
+    MEMORY_LONG_TERM_TOP_K: int = 6
+    MEMORY_LLM_SELECTION_ENABLED: bool = True
+    MEMORY_LLM_UPDATE_ENABLED: bool = True
+    MEMORY_MAX_ACTIVE_PER_USER: int = 200
+    MEMORY_SUMMARY_UPDATE_MIN_NEW_TURNS: int = 2
+    MEMORY_SUMMARY_FORCE_UPDATE_CHARS: int = 1800
+    MEMORY_SESSION_SUMMARY_TARGET_CHARS: int = 1600
+    MEMORY_SUMMARY_ITEM_TARGET_CHARS: int = 240
+    MEMORY_LONG_TERM_FALLBACK_MIN_LEXICAL_SCORE: float = 1.0
+
+    # RAGAS evaluation uses the same DeepSeek endpoint, but a lower
     # temperature and lower concurrency make judge-style JSON outputs steadier.
-    RAGAS_LLM_MODEL: Optional[str] = None
+    RAGAS_LLM_MODEL: str = "deepseek-v4-pro"
     RAGAS_LLM_TEMPERATURE: float = 0.0
-    RAGAS_LLM_MAX_TOKENS: int = 2048
+    RAGAS_LLM_MAX_TOKENS: Optional[int] = None
     RAGAS_LLM_TIMEOUT: int = 180
-    RAGAS_LLM_MAX_RETRIES: int = 5
-    RAGAS_RUN_MAX_RETRIES: int = 5
+    RAGAS_LLM_MAX_RETRIES: int = 3
+    RAGAS_RUN_MAX_RETRIES: int = 3
     RAGAS_RUN_MAX_WAIT: int = 30
     RAGAS_RUN_MAX_WORKERS: int = 4
     RAGAS_BATCH_SIZE: int = 2
@@ -163,23 +179,22 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = str(BASE_DIR / ".env")
+        env_file_encoding = "utf-8-sig"
         case_sensitive = True
         extra = "ignore"
 
     def model_post_init(self, __context) -> None:
         self.CHROMA_PERSIST_DIR = _resolve_project_path(self.CHROMA_PERSIST_DIR)
         self.UPLOAD_DIR = _resolve_project_path(self.UPLOAD_DIR)
-        if self.OPENAI_API_KEY and not self.LLM_API_KEY:
-            self.LLM_API_KEY = self.OPENAI_API_KEY
-        if self.LLM_API_KEY and not self.OPENAI_API_KEY:
-            self.OPENAI_API_KEY = self.LLM_API_KEY
-        configured_fields = getattr(self, "model_fields_set", set())
-        if self.OPENAI_MODEL and "LLM_MODEL" not in configured_fields:
-            self.LLM_MODEL = self.OPENAI_MODEL
-        if self.BASE_URL:
-            self.LLM_BASE_URL = self.BASE_URL
-        elif self.OPENAI_BASE_URL and not self.LLM_BASE_URL:
-            self.LLM_BASE_URL = self.OPENAI_BASE_URL
+        # All chat/reasoning tasks use DeepSeek through langchain-deepseek.
+        self.LLM_PROVIDER = "deepseek"
+        self.LLM_MODEL = self.DEEPSEEK_PRO_MODEL or "deepseek-v4-pro"
+        self.LLM_API_KEY = self.DEEPSEEK_API_KEY or self.LLM_API_KEY
+        self.LLM_BASE_URL = (
+            self.DEEPSEEK_BASE_URL
+            or self.LLM_BASE_URL
+            or self.BASE_URL
+        )
 
 
 # 全局配置实例

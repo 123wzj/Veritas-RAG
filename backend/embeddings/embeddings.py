@@ -10,12 +10,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 from langchain_community.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
 
-try:
-    from embeddings.bge_m3 import get_bge_m3_encoder
-    from core.config import settings
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.embeddings.bge_m3 import get_bge_m3_encoder
-    from backend.core.config import settings
+from backend.embeddings.bge_m3 import get_bge_m3_encoder
+from backend.core.config import settings
 
 
 class BaseEmbeddings(ABC):

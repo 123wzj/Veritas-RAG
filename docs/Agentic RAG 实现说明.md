@@ -21,7 +21,7 @@
 
 - Web 框架：`FastAPI`
 - Agent 编排：`LangGraph`
-- 大模型：`OpenAI-compatible ChatOpenAI`（默认 `gpt-5.4`，由 `backend/graph/llm_factory.py` 初始化）
+- 大模型：`DeepSeek V4`（通过 `langchain-deepseek` 的 `ChatDeepSeek` 接入；高频结构化任务使用 `deepseek-v4-flash`，生成、反思和持久记忆决策使用 `deepseek-v4-pro`）
 - Embedding：`BGE-M3`（provider 可配置，当前默认本地模型）
 - Reranker：`BAAI/bge-reranker-v2-m3`
 - 向量数据库：`Chroma`

@@ -8,13 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 
-from core.config import settings
-from db.mysql.connection import init_db, close_db
-from db.redis.connection import redis_client
-from db.chroma.connection import chroma_client
+from backend.core.config import settings
+from backend.db.mysql.connection import init_db, close_db
+from backend.db.redis.connection import redis_client
+from backend.db.chroma.connection import chroma_client
 
 # 导入所有模型以确保 SQLAlchemy 能自动创建表
-from models.database import user, knowledge
+from backend.models.database import user, knowledge
 
 
 # 配置日志
@@ -71,7 +71,7 @@ async def health_check():
 
 
 # ========== API 路由 ==========
-from api.v1.endpoints import rag, knowledge, users, memory
+from backend.api.v1.endpoints import rag, knowledge, users, memory
 
 app.include_router(users.router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
 app.include_router(knowledge.router, prefix=f"{settings.API_V1_PREFIX}/knowledge", tags=["Knowledge"])
@@ -93,7 +93,7 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        "backend.main:app",
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEBUG,

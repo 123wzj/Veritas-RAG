@@ -60,15 +60,21 @@ mysql -u root -p -e "CREATE DATABASE agentic_rag CHARACTER SET utf8mb4 COLLATE u
 
 ### 4. 启动服务
 
-```bash
-python main.py
-```
-
-或使用 uvicorn：
+在仓库根目录执行：
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+conda activate cook-rag-1
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
+
+开发时启用热重载：
+
+```bash
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+后端内部统一使用 `backend.*` 绝对导入，不需要额外设置 `PYTHONPATH`，
+也不要从 `backend/` 目录以 `main:app` 启动。
 
 ### 5. 访问 API 文档
 

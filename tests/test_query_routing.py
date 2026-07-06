@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
+import json
 import os
 import unittest
 
 os.environ.setdefault("LLM_API_KEY", "test-key")
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-key")
 
 from backend.graph.nodes import query_nodes
 
@@ -58,6 +59,70 @@ class QueryRoutingTest(unittest.TestCase):
             "events": [],
         }
         return asyncio.run(query_nodes.plan_query_route(state))
+
+    def test_rewrite_generates_working_memory_from_short_context(self):
+        class _RewriteLLM:
+            def __init__(self):
+                self.messages = []
+
+            async def ainvoke(self, messages):
+                self.messages = messages
+
+                class _Response:
+                    pass
+
+                response = _Response()
+                response.content = json.dumps({
+                    "rewritten_query": "项目长期记忆如何分类和更新",
+                    "search_intent": "procedure",
+                    "missing_facets": [],
+                    "working_memory": {
+                        "current_task": "明确长期记忆分类和更新规则",
+                        "constraints": ["记忆必须存数据库"],
+                        "open_questions": ["如何处理记忆冲突"],
+                        "active_entities": ["长期记忆", "数据库"],
+                    },
+                }, ensure_ascii=False)
+                return response
+
+        fake = _RewriteLLM()
+        query_nodes.llm = fake
+        state = {
+            "query": "那长期记忆怎么分类和更新？",
+            "memory_context": {
+                "session_summary": {
+                    "session_goal": "设计会话记忆系统",
+                    "confirmed_decisions": ["记忆必须存数据库"],
+                },
+                "recent_messages": [
+                    {"role": "user", "content": "短期记忆已经确定了"},
+                    {"role": "assistant", "content": "接下来讨论长期记忆"},
+                ],
+                "working_memory": {
+                    "current_task": "这份旧 working memory 不应进入改写输入",
+                },
+            },
+            "events": [],
+        }
+
+        result = asyncio.run(query_nodes.rewrite_query(state))
+        prompt = fake.messages[-1].content
+
+        self.assertEqual(
+            result["query_rewritten"],
+            "项目长期记忆如何分类和更新",
+        )
+        self.assertEqual(
+            result["memory_context"]["working_memory"]["current_task"],
+            "明确长期记忆分类和更新规则",
+        )
+        self.assertEqual(
+            result["memory_context"]["working_memory_generated_at"],
+            "query_rewrite",
+        )
+        self.assertIn("记忆必须存数据库", prompt)
+        self.assertIn("接下来讨论长期记忆", prompt)
+        self.assertNotIn("旧 working memory", prompt)
 
     def test_chat_is_not_forced_to_knowledge_base_when_kb_selected(self):
         result = self._route("你能介绍一下你自己吗", kb_id=1, web_enabled=True, intent="chat", llm_route="knowledge_base")

@@ -1,4 +1,4 @@
-# RAGAS 答案生成评估使用说明
+# RAGAS 答案生成评估说明
 
 当前项目原来已有 `mteb/T2Retrieval` 检索阶段评估，现在新增 `backend/evaluation/run_ragas_answer_eval.py`，用于对当前系统的端到端 RAG 答案生成阶段做 RAGAS 评估。
 
@@ -11,320 +11,142 @@ RAGAS 看“最后答案答得靠不靠谱”
 
 这两个评估不要混在一起看。检索好，不代表答案一定好；答案差，也不一定都是检索的问题。
 
-## 1. 评估脚本做什么
 
-脚本会按下面流程执行：
 
-```text
-评估样本 question
-  -> 调用当前项目 run_agentic_rag
-  -> 获取 final_answer / selected_evidence / citations / verification
-  -> 转换成 RAGAS 所需字段
-  -> 计算 faithfulness / answer_relevancy / context_precision / context_recall / answer_correctness
-  -> 输出 JSON 报告
+## 1. 评测数据需要哪些字段？
+
+最常见的一行评测数据包含：
+
+| 字段                                       | 含义                                 |
+| ------------------------------------------ | ------------------------------------ |
+| `question` / `user_input`                  | 用户问题                             |
+| `reference` / `ground_truth`               | 标准答案                             |
+| `retrieved_contexts` / `contexts`          | RAG 实际检索出来的 chunk             |
+| `response` / `answer`                      | LLM 最终回答                         |
+| `reference_contexts` / `reference_doc_ids` | 可选，人工标注的正确 chunk 或文档 ID |
+
+Ragas 的 `evaluate()` 接收 dataset 和 metrics，官方示例中 dataset 可包含 `question`、`ground_truth`、`answer`、`contexts`，然后输出如 `context_precision`、`faithfulness`、`answer_relevancy` 等结果。
+
+
+
+## 指标：
+
+| 指标                                      | 主要评估什么         | 含义                                                  | 低分说明                                                     |
+| ----------------------------------------- | -------------------- | ----------------------------------------------------- | ------------------------------------------------------------ |
+| **Context Precision**                     | 检索排序质量         | 检索出来的 chunk 里，相关内容是否占比高、是否排在前面 | 检索噪声大、top-k 里无关 chunk 太多、需要 rerank             |
+| **Context Recall**                        | 检索覆盖率           | 标准答案所需的信息，有多少被检索出来了                | 知识库缺内容、chunk 切分差、召回 top-k 太小、embedding 不合适 |
+| **Faithfulness**                          | 回答是否忠实于上下文 | 回答里的事实 claim 是否都能被 retrieved contexts 支持 | 模型幻觉、回答编造、prompt 约束不够                          |
+| **Response Relevancy / Answer Relevancy** | 回答是否对题         | 回答是否直接回应用户问题，不看事实对错                | 答非所问、回答不完整、废话多、格式不符合需求                 |
+
+RAGAS 官方当前把 RAG 场景的指标列为：Context Precision、Context Recall、Context Entities Recall、Noise Sensitivity、Response Relevancy、Faithfulness，以及多模态相关指标。
+
+
+
+### 1. Context Precision：检索得准不准
+
+它看的是：**检索出来的内容里，相关 chunk 的比例和排序是否好**。官方定义里，Context Precision 衡量 `retrieved_contexts` 中相关 chunk 的比例，并按 precision@k 计算，越高越好。
+
+例子：
+
+```
+问题：企业版是否支持 SSO？
+Top-3 检索：
+1. 企业版支持 SAML SSO     ✅
+2. 企业版价格说明           ✅/部分相关
+3. 用户头像上传规则         ❌
 ```
 
-它不是绕过系统直接评估文本，而是使用当前项目真实的 LangGraph、混合检索、RRF、reranker、证据打包和答案生成链路。
+这个指标回答的是：**检索结果里有没有太多垃圾内容？正确内容是不是排在前面？**
 
-## 2. 评估样本格式
+### 2. Context Recall：该找的有没有找全
 
-支持 JSONL 或 JSON。推荐 JSONL，每行一条：
+它看的是：**标准答案需要的关键信息，有多少被检索到了**。官方说明 Context Recall 关注“不漏掉重要结果”，通常需要 `reference` 或 `reference_contexts` 来对照；其思想是看 reference 中的 claims 有多少能被 retrieved context 支持。
 
-```json
-{"id":"recipe_001","question":"红烧肉怎么做才不柴？","ground_truth":"选择带皮五花肉，先焯水去腥，再用小火慢炖到软烂；不要长时间大火煮，否则肉质容易变柴。","gold_doc_ids":["doc_hongshaorou"]}
+例子：
+
+```
+标准答案需要：
+- 支持 SAML SSO
+- 只在企业版开放
+- 需要管理员配置
+
+检索结果只找到了：
+- 支持 SAML SSO
 ```
 
-字段说明：
+这种情况下 Context Recall 就不高，因为重要信息没找全。
 
-| 字段 | 必填 | 含义 |
-| --- | --- | --- |
-| `id` | 否 | 样本 ID |
-| `question` | 是 | 用户问题 |
-| `ground_truth` | 建议填 | 标准答案，RAGAS 的 context recall、answer correctness 等指标需要它 |
-| `reference` | 否 | `ground_truth` 的别名 |
-| `expected_answer` | 否 | `ground_truth` 的别名 |
-| `gold_doc_ids` | 否 | 标准证据文档 ID，当前脚本会保存进报告，方便人工排查 |
+### 3. Faithfulness：回答有没有基于资料
 
-示例文件已放在：
+它看的是：**模型最终回答是否忠实于检索到的上下文**。官方定义是：如果回答中的所有 claim 都能被 retrieved context 支持，就认为回答 faithful；分数是“被上下文支持的回答 claim 数 / 回答总 claim 数”。
 
-```text
-data/evaluation/ragas_answer_samples.example.jsonl
+例子：
+
+```
+检索内容：退款通常 3-7 个工作日到账。
+回答：退款通常 3-7 个工作日到账。 ✅ Faithfulness 高
+
+回答：退款通常 1 个工作日到账。 ❌ Faithfulness 低
 ```
 
-实际项目中建议复制一份自己的样本文件，例如：
+这个指标主要用来抓 **幻觉**。
+ 注意：Faithfulness 高不一定代表答案完全正确，它只代表“回答是否被检索上下文支持”。如果检索到的上下文本身是错的，Faithfulness 仍可能高。
 
-```text
-data/evaluation/ragas_answer_samples.jsonl
+### 4. Response Relevancy / Answer Relevancy：有没有答到问题
+
+它看的是：**回答和用户问题是否相关**，不评估事实正确性。官方说明 Answer Relevancy 衡量 response 与 user input 的相关程度，惩罚不完整或包含多余信息的回答，但不判断 factual accuracy。
+
+例子：
+
+```
+问题：如何申请退款？
+
+回答 A：进入订单页，点击申请退款。 ✅ 相关
+回答 B：我们的会员体系分为普通版和企业版。 ❌ 不相关
+回答 C：退款可以申请，另外我们公司成立于 2018 年…… ⚠️ 有冗余
 ```
 
-## 3. 安装依赖
+### 5. Factual Correctness：和标准答案比，事实对不对
 
-已在 `backend/requirements.txt` 增加：
+如果你有 `reference` / `ground_truth`，这个指标很有用。官方定义里，Factual Correctness 会比较 generated `response` 和 `reference` 的事实一致性，通常会把两边拆成 claims，再用 precision、recall、F1 衡量事实重合程度。
 
-```text
-ragas>=0.2.14,<0.4.0
-datasets>=2.16.0
-pandas>=2.0.0
-pyarrow>=14.0.0
+它适合回答：
+
+```
+生成答案和标准答案相比，对了多少？
+有没有漏掉标准答案里的关键点？
+有没有多说错误事实？
 ```
 
-安装：
+如果你是做学校项目、企业知识库、客服 QA，我建议把它加入评估，因为它比单纯看 Faithfulness 更接近“最终答案对不对”。
 
-```bash
-cd backend
-pip install -r requirements.txt
+### 6. Context Entities Recall：关键实体有没有召回
+
+这个指标看的是：**reference 中的实体，有多少出现在 retrieved contexts 里**。官方说明它适合事实型、实体密集型场景，比如旅游问答、历史 QA 等。
+
+适合这些知识库：
+
+```
+产品型号
+人名
+地名
+合同编号
+药品名称
+政策条款
+公司名
+时间日期
 ```
 
-RAGAS 会调用评估 LLM。当前项目只从根目录 `.env` 读取本地配置：
+如果你的问题经常依赖实体，比如“某产品 A-203 的保修期是多少？”，这个指标很有价值。
 
-```text
-.env
+### 7. Noise Sensitivity：抗干扰能力
+
+它看的是：**当检索结果里混入相关或不相关文档时，系统是否容易答错**。官方说明 Noise Sensitivity 衡量系统在使用相关或无关检索文档时产生错误回答的频率，分数 0 到 1，越低越好。
+
+这个指标适合检查：
+
 ```
-
-不要再使用：
-
-```text
-backend/.env
-```
-
-原因很简单：两份 `.env` 容易互相覆盖。之前就出现过 `backend/.env` 把模型覆盖成错误模型的问题，所以现在统一只保留根目录 `.env`。
-
-普通 RAG 生成使用：
-
-```text
-LLM_MODEL
-LLM_BASE_URL
-LLM_API_KEY
-```
-
-RAGAS evaluator 也走同一个 OpenAI-compatible 服务，但脚本里给它单独加了更稳的评估配置：
-
-```text
-RAGAS_LLM_TEMPERATURE=0.0
-RAGAS_BATCH_SIZE=2
-RAGAS_RUN_MAX_WORKERS=4
-RAGAS_RUN_MAX_RETRIES=5
-```
-
-大白话：RAGAS 打分需要模型稳定输出结构化判断，所以温度要低，并发不要太高。
-
-## 4. 运行评估
-
-先确保你已经有一个可用知识库 `kb_id`，其中已导入业务文档或 HotpotQA 文档。
-
-运行：
-
-```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --user-id 1 --top-k 6
-```
-
-如果想只收集当前 RAG 生成结果，不调用 RAGAS：
-
-```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --collect-only
-```
-
-如果要启用联网增强：
-
-```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --web-enabled
-```
-
-限制样本数量：
-
-```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --limit 20
-```
-
-指定指标：
-
-```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/ragas_answer_samples.jsonl --kb-id 你的KB_ID --metrics faithfulness,answer_relevancy,context_precision,context_recall,answer_correctness
-```
-
-## 5. 输出报告
-
-报告默认输出到：
-
-```text
-data/evaluation/reports/ragas_answer_eval_kb{kb_id}_{timestamp}.json
-```
-
-报告结构：
-
-```json
-{
-  "config": {},
-  "seconds": 123.45,
-  "sample_count": 10,
-  "success_count": 10,
-  "ragas": {
-    "summary": {
-      "faithfulness": 0.82,
-      "answer_relevancy": 0.79,
-      "context_precision": 0.75,
-      "context_recall": 0.68,
-      "answer_correctness": 0.71
-    },
-    "rows": []
-  },
-  "samples": []
-}
-```
-
-`samples` 会保存每条问题的：
-
-- `question`
-- `answer`
-- `contexts`
-- `reference`
-- `citations`
-- `selected_evidence`
-- `confidence`
-- `verification`
-- `route_type`
-- `evidence_grade`
-- `latency_ms`
-
-这些字段用来定位失败原因。比如 RAGAS 的 faithfulness 低，可以直接看 `answer` 是否有证据外扩写；context_recall 低，可以看 `contexts` 是否漏了标准答案所需信息。
-
-## 6. 指标怎么看
-
-| 指标 | 解释 | 低分优先排查 |
-| --- | --- | --- |
-| `faithfulness` | 答案是否被上下文支持 | 生成 prompt、引用约束、证据不足仍硬答 |
-| `answer_relevancy` | 答案是否回答了问题 | query rewrite、问题拆解、生成指令 |
-| `context_precision` | 给模型的上下文是否干净 | rerank、证据去重、pack_evidence |
-| `context_recall` | 标准答案所需信息是否进入上下文 | 检索召回、chunk、parent backfill |
-| `answer_correctness` | 答案与标准答案是否一致 | 检索 + 生成综合问题 |
-
-如果样本没有 `ground_truth/reference/expected_answer`，脚本会跳过需要参考答案的指标，只保留不依赖标准答案的指标。
-
-## 7. 建议的落地方式
-
-先用 20-50 条高质量手写样本跑通流程，再扩大到 200 条左右。每条样本最好包含：
-
-- 一个真实用户会问的问题。
-- 一个人工写的标准答案。
-- 可选的标准文档 ID 或 chunk ID。
-- 问题类型，例如精确菜名、食材组合、步骤技巧、替代方案、证据不足。
-
-上线前建议固定一份 baseline 报告。后续改 chunk、embedding、reranker、prompt、反思阈值时，都用同一批样本重跑，比较 RAGAS 分数、延迟和失败样本。
-
-## 8. 当前项目已经验证过什么
-
-当前已经用 HotpotQA 200 条样本中的前 20 条做过稳定性回归：
-
-```text
-collect-only
-sample_count=20
-success_count=20
-recursion_errors=0
-report=data/evaluation/reports/ragas_answer_eval_kb7_20260618_114555.json
-```
-
-这说明当前 RAG 图流程已经能收口，不再出现之前那种 `Recursion limit of 25 reached`。
-
-也跑过 5 条完整 RAGAS，RAGAS evaluator 能稳定出分，并且明细没有空值：
-
-```text
-sample_count=5
-success_count=5
-faithfulness=0.7813
-answer_relevancy=0.3452
-llm_context_precision_with_reference=0.4400
-context_recall=1.0000
-answer_correctness=0.2576
-report=data/evaluation/reports/ragas_answer_eval_kb7_20260618_122319.json
-```
-
-注意：这 5 条只是 smoke test，不要把它当成最终质量结论。它主要证明：
-
-- RAG 主流程能跑完。
-- recursion limit 问题消失。
-- RAGAS evaluator LLM 能连接并出分。
-- RAGAS 明细没有空值。
-
-## 9. 使用专门的生成评估数据集 HotpotQA
-
-如果不想用自建样本，也不要继续拿纯检索数据集硬凑答案评估，可以使用 HotpotQA。HotpotQA 每条样本包含：
-
-- `question`：问题。
-- `answer`：标准答案。
-- `context`：候选上下文段落。
-- `supporting_facts`：支撑答案的证据标题和句子位置。
-
-这类数据更适合评估答案生成阶段，尤其是：
-
-- 多跳问答是否答对。
-- 答案是否忠实于证据。
-- 检索到的上下文是否足够支持答案。
-- 生成阶段是否把多个证据串起来。
-
-项目已新增导入脚本：
-
-```text
-backend/evaluation/import_hotpotqa_dataset.py
-```
-
-安装/确认依赖后，用 `cook-rag-1` 环境导入样本：
-
-```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/import_hotpotqa_dataset.py --limit-examples 200 --user-id 1 --clean-existing
-```
-
-脚本会：
-
-- 下载 `hotpotqa/hotpot_qa` 的 `distractor/validation` split。
-- 创建知识库 `public_eval_hotpotqa_generation`。
-- 把 HotpotQA context 段落导入 MySQL + Chroma。
-- 生成 RAGAS 样本文件：
-
-```text
-data/evaluation/hotpotqa_ragas_samples.jsonl
-```
-
-导入完成后会输出 `kb_id`，例如当前环境是：
-
-```text
-kb_id=7
-sample_output=data/evaluation/hotpotqa_ragas_samples.jsonl
-sample_count=200
-```
-
-然后运行 RAGAS：
-
-```bash
-D:\Software\anaconda3\envs\cook-rag-1\python.exe backend/evaluation/run_ragas_answer_eval.py --input data/evaluation/hotpotqa_ragas_samples.jsonl --kb-id 7 --user-id 1 --top-k 6 --limit 5
-```
-
-## 10. 当前 HotpotQA 数据集够不够
-
-当前这个 HotpotQA 数据集适合继续用，但只能作为“技术回归基准”，不建议作为唯一企业评估集。
-
-它适合测：
-
-- 多跳问题拆解。
-- 证据是否找全。
-- 答案是否忠实于证据。
-- Reflection 是否会失控。
-- RAGAS 链路是否能稳定出分。
-
-它不适合单独证明企业落地效果，因为它主要是英文百科问题，和真实企业知识库差别很大。
-
-企业落地还要补一份业务 QA 评估集，至少覆盖：
-
-- 中文业务问法。
-- 文档里找得到答案的问题。
-- 文档里找不到答案的问题。
-- 权限隔离问题。
-- 表格、数字、日期、版本差异问题。
-- 多文档综合问题。
-- 闲聊、联网、知识库、hybrid 路由问题。
-
-推荐结论：
-
-```text
-HotpotQA 继续保留，用来做固定回归。
-真正要看企业效果，还要建设自己的业务 QA 集。
+检索结果里有噪声时，模型会不会被带偏？
+多个 chunk 内容冲突时，模型会不会乱答？
+上下文里夹杂无关内容时，模型是否还能回答正确？
 ```

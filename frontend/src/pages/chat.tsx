@@ -50,7 +50,7 @@ const thinkingEvents = new Set([
 
 const toChatSession = (session: SessionContext, messages: ChatMessageType[] = []): ChatSession => ({
   session_id: session.session_id,
-  title: session.summary || "新对话",
+  title: session.title || session.summary || "新对话",
   created_at: session.created_at,
   last_active: session.last_active,
   message_count: session.message_count,

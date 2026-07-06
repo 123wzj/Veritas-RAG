@@ -3,7 +3,7 @@
 视觉和 OCR 模块
 """
 
-from services.vision.ocr import (
+from backend.services.vision.ocr import (
     ocr_service,
     multimodal_embedding_service,
     get_ocr_service,

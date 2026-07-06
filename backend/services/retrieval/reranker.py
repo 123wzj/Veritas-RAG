@@ -7,14 +7,9 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-try:
-    from core.hf_cache import HF_HOME_PATH, configure_hf_cache
-    from core.config import settings
-    from services.retrieval.diversity import select_diverse_results
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.core.hf_cache import HF_HOME_PATH, configure_hf_cache
-    from backend.core.config import settings
-    from backend.services.retrieval.diversity import select_diverse_results
+from backend.core.hf_cache import HF_HOME_PATH, configure_hf_cache
+from backend.core.config import settings
+from backend.services.retrieval.diversity import select_diverse_results
 
 configure_hf_cache()
 

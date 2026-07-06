@@ -7,12 +7,8 @@ import threading
 from functools import lru_cache
 from typing import Dict, List, Tuple
 
-try:
-    from core.hf_cache import HF_HOME_PATH, configure_hf_cache
-    from core.config import settings
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.core.hf_cache import HF_HOME_PATH, configure_hf_cache
-    from backend.core.config import settings
+from backend.core.hf_cache import HF_HOME_PATH, configure_hf_cache
+from backend.core.config import settings
 
 configure_hf_cache()
 

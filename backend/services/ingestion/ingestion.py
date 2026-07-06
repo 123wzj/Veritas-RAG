@@ -11,22 +11,13 @@ from typing import List, Dict, Any, Optional
 
 from sqlalchemy.orm import Session
 
-try:
-    from services.ingestion.parser import document_parser
-    from services.ingestion.chunker import document_chunker, Chunk
-    from embeddings.embeddings import get_embeddings
-    from embeddings.sparse import get_sparse_embedding
-    from db.chroma.connection import chroma_client
-    from models.database.knowledge import DocumentTable, ChunkTable
-    from models.schemas.knowledge import DocumentStatus, ModalityType
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.services.ingestion.parser import document_parser
-    from backend.services.ingestion.chunker import document_chunker, Chunk
-    from backend.embeddings.embeddings import get_embeddings
-    from backend.embeddings.sparse import get_sparse_embedding
-    from backend.db.chroma.connection import chroma_client
-    from backend.models.database.knowledge import DocumentTable, ChunkTable
-    from backend.models.schemas.knowledge import DocumentStatus, ModalityType
+from backend.services.ingestion.parser import document_parser
+from backend.services.ingestion.chunker import document_chunker, Chunk
+from backend.embeddings.embeddings import get_embeddings
+from backend.embeddings.sparse import get_sparse_embedding
+from backend.db.chroma.connection import chroma_client
+from backend.models.database.knowledge import DocumentTable, ChunkTable
+from backend.models.schemas.knowledge import DocumentStatus, ModalityType
 
 
 class IngestionService:
@@ -106,10 +97,7 @@ class IngestionService:
                 child_sparse_vectors=child_sparse_vectors,
             )
 
-            try:
-                from services.retrieval.hybrid import hybrid_retriever
-            except ImportError:  # pragma: no cover - fallback for package-style imports
-                from backend.services.retrieval.hybrid import hybrid_retriever
+            from backend.services.retrieval.hybrid import hybrid_retriever
             hybrid_retriever.invalidate_sparse_cache(user_id=user_id, kb_id=kb_id)
 
             if task_callback:
@@ -288,10 +276,7 @@ class IngestionService:
             ).delete()
             db.commit()
 
-            try:
-                from services.retrieval.hybrid import hybrid_retriever
-            except ImportError:  # pragma: no cover - fallback for package-style imports
-                from backend.services.retrieval.hybrid import hybrid_retriever
+            from backend.services.retrieval.hybrid import hybrid_retriever
             hybrid_retriever.invalidate_sparse_cache()
             return True
         except Exception as e:

@@ -8,14 +8,14 @@ import sys
 from pathlib import Path
 
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from db.chroma.connection import chroma_client
-from db.mysql.connection import SessionLocal, init_db
-from models.database.knowledge import ChunkTable, DocumentTable, KnowledgeBasePermissionTable, KnowledgeBaseTable
-from services.retrieval.hybrid import hybrid_retriever
+from backend.db.chroma.connection import chroma_client
+from backend.db.mysql.connection import SessionLocal, init_db
+from backend.models.database.knowledge import ChunkTable, DocumentTable, KnowledgeBasePermissionTable, KnowledgeBaseTable
+from backend.services.retrieval.hybrid import hybrid_retriever
 
 
 def parse_args() -> argparse.Namespace:

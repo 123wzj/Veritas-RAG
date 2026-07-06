@@ -20,8 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-for path in (PROJECT_ROOT, BACKEND_ROOT):
+for path in (PROJECT_ROOT,):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
@@ -163,7 +162,7 @@ def pick_reference(case: Dict[str, Any]) -> Optional[str]:
 
 
 async def run_case(case: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
-    from graph.graph import run_agentic_rag
+    from backend.graph.graph import run_agentic_rag
 
     started = time.perf_counter()
     try:
@@ -425,30 +424,40 @@ def first_attr(module: Any, names: Iterable[str]) -> Optional[Any]:
 
 
 def get_project_settings() -> Any:
-    try:
-        from core.config import settings
-    except ImportError:  # pragma: no cover - package-style fallback
-        from backend.core.config import settings
+    from backend.core.config import settings
     return settings
 
 
 def get_ragas_llm() -> Any:
-    from langchain_openai import ChatOpenAI
+    from langchain_deepseek import ChatDeepSeek
 
     settings = get_project_settings()
-    llm = ChatOpenAI(
-        model=settings.RAGAS_LLM_MODEL or settings.LLM_MODEL or settings.OPENAI_MODEL,
-        api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY,
-        base_url=settings.LLM_BASE_URL or settings.OPENAI_BASE_URL or None,
+    deepseek_api_key = getattr(settings, "DEEPSEEK_API_KEY", "") or ""
+    deepseek_base_url = getattr(settings, "DEEPSEEK_BASE_URL", None)
+    deepseek_model = (
+        getattr(settings, "DEEPSEEK_PRO_MODEL", "deepseek-v4-pro")
+        or "deepseek-v4-pro"
+    )
+    llm = ChatDeepSeek(
+        model=settings.RAGAS_LLM_MODEL or deepseek_model,
+        api_key=deepseek_api_key or settings.LLM_API_KEY,
+        api_base=(
+            deepseek_base_url
+            or settings.LLM_BASE_URL
+            or "https://api.deepseek.com"
+        ),
         temperature=settings.RAGAS_LLM_TEMPERATURE,
-        max_tokens=settings.RAGAS_LLM_MAX_TOKENS,
         timeout=settings.RAGAS_LLM_TIMEOUT,
-        max_retries=settings.RAGAS_LLM_MAX_RETRIES,
+        max_retries=3,
     )
     try:
         from ragas.llms import LangchainLLMWrapper
 
-        return LangchainLLMWrapper(llm)
+        wrapper = LangchainLLMWrapper(llm)
+        # RAGAS may request multiple candidates, while DeepSeek only accepts n=1.
+        # The wrapper will issue separate single-candidate requests and merge them.
+        wrapper.bypass_n = True
+        return wrapper
     except Exception:
         return llm
 
@@ -460,7 +469,7 @@ def get_ragas_run_config() -> Any:
 
         return RunConfig(
             timeout=settings.RAGAS_LLM_TIMEOUT,
-            max_retries=settings.RAGAS_RUN_MAX_RETRIES,
+            max_retries=3,
             max_wait=settings.RAGAS_RUN_MAX_WAIT,
             max_workers=settings.RAGAS_RUN_MAX_WORKERS,
         )
@@ -475,7 +484,7 @@ def get_ragas_batch_size() -> Optional[int]:
 
 
 def get_ragas_embeddings() -> Any:
-    from embeddings.embeddings import get_embeddings
+    from backend.embeddings.embeddings import get_embeddings
 
     embeddings = ProjectEmbeddingsAdapter(get_embeddings())
     try:

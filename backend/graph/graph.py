@@ -12,10 +12,19 @@ from backend.graph.nodes.query_nodes import (
     plan_query_route,
     route_planned_query,
 )
-from backend.graph.nodes.retrieval_nodes import retrieve_hybrid, rerank_candidates, pack_evidence, judge_evidence
+from backend.graph.nodes.retrieval_nodes import (
+    retrieve_hybrid,
+    rerank_candidates,
+    pack_evidence,
+    judge_evidence_slots as judge_evidence,
+)
 from backend.graph.nodes.reflection_nodes import reflection, route_reflection, route_evidence
 from backend.graph.nodes.generation_nodes import generate_answer, verify_answer, route_verification
-from backend.graph.nodes.memory_nodes import load_user_memory, write_memory
+from backend.graph.nodes.memory_nodes import (
+    load_generation_memory,
+    load_user_memory,
+    write_memory,
+)
 from backend.graph.nodes.web_nodes import web_search
 from backend.core.config import settings
 
@@ -29,6 +38,7 @@ def create_agentic_rag_graph() -> StateGraph:
     workflow = StateGraph(RAGState)
 
     workflow.add_node("load_memory", load_user_memory)
+    workflow.add_node("load_generation_memory", load_generation_memory)
     workflow.add_node("write_memory", write_memory)
 
     # 查询重写
@@ -60,7 +70,7 @@ def create_agentic_rag_graph() -> StateGraph:
         {
             "retrieve": "retrieve",
             "web_search": "web_search",
-            "generate": "generate_answer",
+            "generate": "load_generation_memory",
         },
     )
 
@@ -72,7 +82,7 @@ def create_agentic_rag_graph() -> StateGraph:
         "judge_evidence",
         route_evidence,
         {
-            "generate": "generate_answer",
+            "generate": "load_generation_memory",
             "reflect": "reflect",
             "web_search": "web_search",
         },
@@ -84,11 +94,12 @@ def create_agentic_rag_graph() -> StateGraph:
         {
             "retrieve": "retrieve",
             "web_search": "web_search",
-            "proceed": "generate_answer",
+            "proceed": "load_generation_memory",
         },
     )
 
     workflow.add_edge("web_search", "judge_evidence")
+    workflow.add_edge("load_generation_memory", "generate_answer")
     workflow.add_edge("generate_answer", "verify_answer")
 
     workflow.add_conditional_edges(
@@ -110,19 +121,25 @@ agentic_rag_graph = create_agentic_rag_graph().compile()
 async def run_agentic_rag(
     query: str,
     user_id: int,
+    request_id: str | None = None,
     kb_id: int = None,
     session_id: str = None,
     web_enabled: bool = False,
     stream_events: bool = True,
     top_k: int | None = None,
+    max_reflections: int | None = None,
+    max_steps: int | None = None,
 ) -> RAGState:
     initial_state = create_initial_state(
         query=query,
         user_id=user_id,
+        request_id=request_id,
         kb_id=kb_id,
         session_id=session_id,
         web_enabled=web_enabled,
         top_k=top_k,
+        max_reflections=max_reflections,
+        max_steps=max_steps,
     )
 
     if stream_events:

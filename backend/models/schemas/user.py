@@ -70,6 +70,7 @@ class SessionContext(BaseModel):
     created_at: datetime
     last_active: datetime
     message_count: int = 0
+    title: Optional[str] = None
     summary: Optional[str] = None
     category: Optional[str] = None
     context: Optional[dict[str, Any]] = None

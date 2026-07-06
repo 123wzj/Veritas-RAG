@@ -739,7 +739,7 @@ data/evaluation/reports/
 | dense_top_k | 50 |
 | bm25_top_k | 50 |
 | RRF k | 60 |
-| LLM | gpt-5.4 compatible |
+| LLM | DeepSeek `deepseek-v4-pro` |
 | 数据集 | HotpotQA validation distractor |
 | 样本数 | 10/20/50/200 |
 

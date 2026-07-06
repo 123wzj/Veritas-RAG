@@ -162,8 +162,10 @@ class RAGGraphState(BaseModel):
     confidence: float = 0.0
     used_web_search: bool = False
     memory_context: Optional[Dict[str, Any]] = None
-    session_summary: Optional[str] = None
+    session_summary: Optional[Dict[str, Any]] = None
+    memory_update_plan: Optional[Dict[str, Any]] = None
     prompt_context: Optional[str] = None
+    context_token_usage: Optional[Dict[str, Any]] = None
     events: List[Dict[str, Any]] = []
     error: Optional[str] = None
     step_count: int = 0

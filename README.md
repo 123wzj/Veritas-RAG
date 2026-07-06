@@ -1,263 +1,214 @@
 # Veritas RAG
 
-基于 LangChain + LangGraph + Chroma 的智能问答系统，支持知识库检索、联网搜索、用户记忆等功能。
+Veritas RAG 是一个面向私有知识库的 Agentic RAG 问答系统。它将文档解析入库、混合检索、上下文工程、证据判断、答案生成与反思验证组织成一条可追踪的处理链路。
 
-## 项目结构
+项目适合用于：
 
-```
-veritas-rag/
-├── backend/                # FastAPI 后端服务
-│   ├── api/               # API 路由层
-│   │   ├── deps/          # 依赖注入（认证、数据库）
-│   │   └── v1/endpoints/  # RESTful API 端点
-│   ├── core/              # 核心配置模块
-│   ├── models/            # 数据模型（Pydantic schemas, Database tables）
-│   ├── services/          # 业务逻辑层
-│   │   ├── ingestion/     # 文档入库服务
-│   │   ├── retrieval/     # 混合检索服务
-│   │   ├── memory/        # 用户记忆服务
-│   │   └── web_search/    # 联网搜索服务
-│   ├── graph/             # LangGraph 状态机
-│   │   ├── nodes/         # 节点实现
-│   │   ├── state/         # 状态定义
-│   │   └── llm_factory.py # LLM 工厂
-│   ├── db/                # 数据库连接
-│   ├── embeddings/        # 向量化模块
-│   └── main.py            # 应用入口
-├── frontend/              # React + TypeScript 前端
-│   └── src/
-│       ├── components/    # UI 组件
-│       ├── pages/         # 页面（聊天、知识库、设置）
-│       ├── stores/        # Zustand 状态管理
-│       ├── services/      # API 服务层
-│       └── types/         # TypeScript 类型
-└── agentic-rag-dev-doc.md # 开发文档
+- 基于企业内部文档、制度、手册或专业资料进行问答；
+- 在长会话中结合当前问题、历史对话和用户长期信息持续完成任务；
+- 为答案附带可核查的证据引用，降低无依据生成；
+- 在知识库证据不足或存在冲突时进行补充检索、联网搜索、部分回答或拒答。
+
+## 数据入库
+
+文档入库不是直接把整篇文档写入向量库，而是采用 Parent-Child 分层切分：
+
+```text
+原始文档
+  -> 按文档结构解析
+  -> 生成 Parent Chunk
+  -> 将 Parent Chunk 切分为 Child Chunk
+  -> 计算 Child Chunk 的稠密向量和稀疏表示
+  -> MySQL 与 Chroma 分别持久化
 ```
 
-## 核心功能
+### 文档切分
 
-### 1. LangGraph Agentic 状态机
+系统会尽量保留不同文档格式原有的语义边界：
 
-14 个节点实现完整的智能问答流程：
+| 文档类型 | 主要切分边界 |
+| --- | --- |
+| PDF | 页 |
+| DOCX | 段落和章节 |
+| PPTX | 幻灯片 |
+| Markdown | 标题章节 |
+| TXT | 空行分隔的段落 |
 
-| 节点 | 功能 | 状态 |
-|------|------|------|
-| load_memory | 加载用户画像和偏好 | ✅ |
-| rewrite_query | 问题改写和优化 | ✅ |
-| decompose_query | 复杂问题拆解 | ✅ |
-| retrieve | 混合检索（Dense + Sparse） | ✅ |
-| rerank | 候选重排 | ✅ |
-| pack_evidence | 证据打包 | ✅ |
-| judge_evidence | 证据充分性判断 | ✅ |
-| reflect | 反思与自纠 | ✅ |
-| web_search | 联网搜索增强 | ✅ |
-| generate_answer | 答案生成 | ✅ |
-| verify_answer | 答案验证 | ✅ |
-| write_memory | 记忆写入 | ✅ |
+Parent Chunk 的目标长度约为 1000 tokens，用于保留相对完整的章节或段落上下文。过长的 Parent Chunk 会继续拆分，避免单个上下文块过大。
 
-### 2. 混合检索服务
+每个 Parent Chunk 再按句子切分为约 300 tokens 的 Child Chunk，相邻 Child Chunk 保留约 50 tokens 的重叠。检索时使用较小的 Child Chunk 匹配问题，生成前再回补对应的 Parent Chunk。
 
-- **Dense 检索**: 基于语义向量的检索
-- **Sparse 检索**: 基于词法特征的关键词检索
-- **RRF 融合**: Rank-based Reciprocal Fusion 融合算法
-- **Parent 回补**: 使用父级 Chunk 提供完整上下文
+这样设计的原因是：
 
-### 3. 向量化模块
+- 小块文本包含的信息更集中，适合做向量和关键词匹配；
+- 父级文本保留完整语境，减少只召回半句话造成的误解；
+- Child 负责召回、Parent 负责生成，可以兼顾检索精度和上下文完整性；
+- 重叠区域降低答案信息恰好位于切分边界时的遗漏概率。
 
-支持多种 Embedding 模型：
-- **Qwen (通义千问)**: text-embedding-v3（默认）
-- **OpenAI**: text-embedding-3-large
-- **HuggingFace**: shibing624/text2vec-base-chinese（本地）
+### 数据存储
 
-### 4. 用户记忆模块
+系统将结构化数据和向量数据分开保存：
 
-- 用户画像（偏好语言、交互风格、兴趣领域）
-- 会话历史记录
-- 常问主题统计
+| 存储 | 保存内容 |
+| --- | --- |
+| MySQL | 文档信息、Parent/Child 原文、层级关系、元数据和稀疏向量 |
+| Chroma | Child Chunk 的稠密向量及用于定位原文的轻量元数据 |
 
-### 5. 联网搜索
+只有 Child Chunk 参与稠密向量和稀疏表示计算。检索命中后，系统根据 Chunk ID 从 MySQL 加载原文并回补 Parent Chunk。这样可以避免在向量库中重复存储大段正文，也便于更新文档、追踪来源和执行权限过滤。
 
-- 支持 Tavily API
-- 可在前端开关控制
+## 检索
 
-## 技术栈
+检索阶段采用稠密检索与稀疏检索并行的混合检索方案：
 
-| 层级 | 技术 |
-|------|------|
-| **后端框架** | FastAPI + Python 3.10+ |
-| **LLM 框架** | LangChain + LangGraph |
-| **数据库** | MySQL (元数据) + Chroma (向量) |
-| **前端** | React 18 + TypeScript + Vite |
-| **UI 组件** | shadcn/ui + Tailwind CSS |
-| **状态管理** | Zustand |
-| **LLM 模型** | Qwen (通义千问) |
-| **Embedding** | Qwen text-embedding-v3 |
-
-## 快速开始
-
-### 前置要求
-
-- Python 3.10+
-- Node.js 18+
-- MySQL 8.0+
-- 通义千问 API Key: [申请地址](https://dashscope.aliyun.com/)
-
-### 后端启动
-
-```bash
-cd backend
-
-# 创建虚拟环境并安装依赖
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-
-# 配置环境变量（编辑 .env 文件）
-# LLM_API_KEY=sk-xxxxx
-# EMBEDDING_API_KEY=sk-xxxxx
-
-# 创建数据库
-mysql -u root -p -e "CREATE DATABASE agentic_rag CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-
-# 初始化数据库并添加默认用户
-mysql -u root -p agentic_rag < scripts/add_default_user.sql
-
-# 启动服务
-python -m uvicorn main:app --reload
+```text
+用户问题
+  -> 问题改写与复杂问题拆分
+  -> 原始问题和查询变体分别检索
+  -> Dense 与 Sparse 并行召回
+  -> 加权 RRF 融合
+  -> 文档和父块多样性控制
+  -> Parent Chunk 回补
+  -> BGE Reranker 重排
+  -> 证据打包
 ```
 
-### 前端启动
+### 混合检索实现
 
-```bash
-cd frontend
+Dense 检索使用 BGE-M3 生成查询向量，在 Chroma 中召回语义相近的 Child Chunk，适合处理同义表达和自然语言描述。
 
-# 安装依赖
-npm install
+Sparse 检索根据词项和语料统计对 MySQL 中的 Child Chunk 评分，适合处理名称、编号、术语、数字等需要精确匹配的内容。稀疏检索的语料统计会被缓存，文档重新入库后缓存随之失效。
 
-# 配置 API 地址（可选，默认 http://localhost:8000）
-echo "VITE_API_BASE_URL=http://localhost:8000" > .env
+两路结果通过加权 Reciprocal Rank Fusion 合并。融合以排名为基础，不要求 Dense 与 Sparse 分数处于同一量纲。原始查询和改写后的查询变体也会参与融合，并按重要性设置权重。
 
-# 启动开发服务器
-npm run dev
+融合后，系统限制同一文档和同一 Parent Chunk 占用过多候选位置，再加载 Parent 正文，并使用本地 `BAAI/bge-reranker-v2-m3` 对候选证据重排。复杂问题会先拆成多个子问题，每个子问题独立检索，最后统一打包为带有 `[E1]`、`[E2]` 标识的证据。
+
+证据进入生成阶段前还会被分为：
+
+- `direct_support`：直接陈述问题所需答案；
+- `partial_support`：只覆盖答案的一部分；
+- `background_only`：主题相关，但不能直接回答；
+- `no_support`：不能支持答案；
+- `conflict`：与其他证据对同一事实存在冲突。
+
+只有直接支持的证据可以用于生成确定结论和正式引用。
+
+### 检索评估指标
+
+| 指标 | 含义 |
+| --- | --- |
+| `Hit@K` | Top K 中是否至少命中一条相关证据 |
+| `Recall@K` | 标注的相关证据有多少进入 Top K |
+| `MRR@K` | 第一条相关证据在排序中的位置 |
+| `NDCG@K` | 多级相关性下整体排序是否合理 |
+| `positive_recall@K` | 正确证据的召回覆盖率 |
+| `positive_mrr@K` | 第一条正确证据的排名质量 |
+| `negative_evidence_rate@K` | Top K 中噪声证据的比例 |
+| `wrong_evidence_rate@K` | Top K 中错误或反事实证据的比例 |
+
+除检索质量外，端到端评估还需要记录成功率、平均延迟和 P95 延迟，用于判断检索链路是否适合作为稳定的回归测试。
+
+## 上下文工程
+
+系统不把整段历史对话直接拼接给模型，也不依赖进程内的长期状态。MySQL 是会话与记忆的事实来源，每次请求按任务需要加载上下文。
+
+### 记忆分层
+
+| 层级 | 内容 | 生命周期 |
+| --- | --- | --- |
+| 最近对话 | 最近 2 至 3 轮原始消息，用于解析指代和延续表达 | 会话级 |
+| 会话摘要 | 当前目标、已确认决定、已放弃方案、开放问题 | 会话级、按条件增量更新 |
+| 工作记忆 | 当前任务、约束、待解决问题、活跃实体 | 仅当前请求 |
+| 长期记忆 | 用户偏好、用户信息、项目背景、项目决策和项目约束 | 跨会话 |
+
+请求开始时，系统先加载最近对话、会话摘要和用户信息。问题改写节点结合这些内容生成独立可检索的问题，同时提取本次请求的工作记忆。
+
+长期记忆不会全部注入 Prompt。系统先按用户或项目作用域筛选有效记忆，再进行词法预排序，最后由 DeepSeek 从候选中选择与当前任务最相关的少量记忆。反思导致查询目标变化时，长期记忆也会重新选择。
+
+### 记忆更新
+
+会话摘要不是每轮都重写。系统会在首次生成摘要、累计足够的新用户轮次或新增对话达到一定长度时更新摘要，并通过版本号和消息游标避免并发请求互相覆盖。
+
+答案通过验证后，系统才规划长期记忆更新。模型可以提出创建、合并、替换或失效记忆的操作，服务层会再次校验记忆类型、作用域和目标 ID，并在事务中写入记忆及审计记录。未通过证据验证的答案不会直接沉淀为长期事实。
+
+### Prompt 动态拼装
+
+不同节点使用不同的 Prompt 策略，包括问题改写、问题拆分、路由、长期记忆选择、证据判断、答案生成、答案验证、反思和记忆更新。系统不会使用一个通用 Prompt 承担所有任务。
+
+生成 Prompt 按以下优先级组织上下文：
+
+```text
+当前问题
+  -> 可用证据
+  -> 当前请求的工作记忆
+  -> 会话摘要
+  -> 最近对话
+  -> 已选择的长期记忆
+  -> 用户信息
 ```
 
-访问: http://localhost:5173
+证据优先级高于记忆，记忆用于解释任务和保持连续性，不能替代知识证据。每个上下文区域都带有明确的类型和信任属性，模型被要求将其中内容视为数据，而不是可执行指令，以降低文档或历史消息中的提示注入风险。
 
-## 配置说明
+上下文拼装还设置了总输入预算和各区域预算。证据占主要空间，最近对话、摘要、工作记忆和长期记忆分别受限；超出预算时按优先级裁剪，避免会话变长后 Prompt 无限制膨胀。
 
-### 后端环境变量 (.env)
+## 生成、验证与反思
 
-```bash
-# ========== 数据库配置 ==========
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your_password
-MYSQL_DB=agentic_rag
+完整生成链路由 LangGraph 编排：
 
-# ========== Qwen 模型配置 ==========
-LLM_PROVIDER=qwen
-LLM_API_KEY=sk-your-api-key
-LLM_MODEL=qwen-turbo
-LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=4096
-
-# ========== Embedding 配置 ==========
-EMBEDDING_PROVIDER=qwen
-EMBEDDING_API_KEY=sk-your-api-key
-EMBEDDING_MODEL=text-embedding-v3
-EMBEDDING_DIMENSION=1024
-
-# ========== 联网搜索配置 ==========
-WEB_SEARCH_ENABLED=false
-WEB_SEARCH_PROVIDER=tavily
-WEB_SEARCH_API_KEY=tvly-your-api-key
+```text
+加载记忆
+  -> 问题改写
+  -> 复杂问题拆分
+  -> 路由规划
+  -> 知识库检索或联网搜索
+  -> 重排与证据打包
+  -> 证据充分性判断
+  -> 加载生成所需记忆
+  -> 生成答案
+  -> 验证答案
+  -> 更新记忆
 ```
 
-## API 文档
+路由节点会根据问题类型选择知识库、联网搜索、普通对话或混合路径。联网搜索是证据补充手段，是否执行还受到系统配置、用户开关和反思结果控制。
 
-启动后端后访问:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+### 答案生成
 
-### 主要端点
+查询理解、证据判断、答案生成和答案验证统一使用按角色配置的 DeepSeek 模型：复杂生成任务使用生成模型，结构化判断和验证任务使用速度更快的模型角色。
 
-| 方法 | 端点 | 描述 |
-|------|------|------|
-| POST | `/api/v1/rag/query/stream` | 流式 RAG 查询 |
-| GET | `/api/v1/users/me` | 获取当前用户 |
-| GET | `/api/v1/users/me/profile` | 获取用户画像 |
-| PUT | `/api/v1/users/me/profile` | 更新用户画像 |
-| GET | `/api/v1/knowledge/` | 获取知识库列表 |
-| POST | `/api/v1/knowledge/` | 创建知识库 |
-| GET | `/api/v1/memory/` | 获取用户记忆 |
+证据判断节点会确定每个问题要点是否具有直接支持、是否只支持部分答案，以及证据之间是否冲突。生成阶段据此选择不同策略：
 
-## 功能演示
+| 模式 | 处理方式 |
+| --- | --- |
+| `normal_answer` | 所需信息均有直接证据，生成完整答案 |
+| `partial_answer` | 回答已被支持的部分，并明确说明缺失内容 |
+| `refusal` | 只有背景材料或没有支持证据时拒绝推断 |
+| `conflict_answer` | 展示证据冲突；能判断可靠来源时纠错回答，否则拒绝确定结论 |
 
-### 聊天界面
-- 支持流式输出
-- 实时显示思考过程
-- 联网搜索开关
-- 知识库检索开关
-- 引用来源展示
+普通答案只能使用证据判断阶段给出的 `allowed_citation_ids`。关键结论通过 `[E#]` 引用对应证据，系统再根据实际使用的证据 ID 构建引用来源，避免模型引用不存在或未被允许的材料。
 
-### 设置页面
-- 用户偏好语言
-- 交互风格选择（简洁/详细/友好）
-- 兴趣领域管理
+复杂问题的各个子问题先分别检索和判断，再将子答案合并。这样可以保留每个答案要点对应的证据，也能在部分证据缺失时给出可验证的部分回答，而不是直接编造或整体拒答。
 
-## 开发状态
+### 答案验证
 
-### ✅ 已完成
-- [x] LangGraph 状态机（14 节点）
-- [x] 混合检索服务（Dense + Sparse + RRF）
-- [x] 向量化模块（Qwen/OpenAI/HuggingFace）
-- [x] 用户记忆模块
-- [x] 联网搜索服务（Tavily）
-- [x] 前端聊天界面
-- [x] 前端设置页面
-- [x] SSE 流式响应
-- [x] 默认用户认证（无需登录）
-- [x] 知识库检索开关控制
-- [x] 知识库管理页面
-- [x] 文档上传功能（集成 Ingestion Pipeline）
-- [x] 会话历史列表
-- [x] 图片 OCR 与多模态检索（支持 Qwen Vision 和 PaddleOCR）
-- [x] Reranker 模型集成（支持 Qwen Reranker 和 Cohere Reranker）
-- [x] 知识库访问权限控制（基于 ACL 的权限管理）
-- [x] 导出对话记录（支持 JSON、Markdown、TXT 格式）
-- [x] 对话分支管理（支持创建、切换、合并分支）
+答案生成后，独立验证节点检查：
 
-### 🚧 待完善
-- [ ] 单元测试覆盖
-- [ ] 前端对话分支管理 UI
+- 答案是否由允许使用的证据支持；
+- 是否真正回答了用户问题；
+- 是否遗漏关键问题要点；
+- 是否出现证据之外的断言；
+- 引用与结论是否对应；
+- 当前置信度是否需要调整。
 
-### 📋 计划中
-- [ ] 知识库访问权限管理 UI
-- [ ] 多模态向量检索优化
+只有答案同时满足证据可信和任务有效的要求，流程才会进入正常的记忆更新。
 
-## 常见问题
+### 反思与失败重试
 
-### 1. 向量化失败怎么办？
+当证据不足、答案验证失败或部分子问题没有被覆盖时，反思节点不会简单重复原查询，而是针对失败部分生成新的检索问题、补充查询和检索重点。
 
-检查 `EMBEDDING_API_KEY` 是否正确配置，确保使用了通义千问的 API Key。
+后续处理有两条路径：
 
-### 2. 知识库检索没有结果？
+1. 仍适合知识库检索时，清理失败子问题的旧候选和证据，使用新查询重新执行检索、重排和证据判断；
+2. 知识库缺少信息且允许联网时，执行 Web Search，将结果作为新证据重新判断。
 
-- 确保已上传文档到知识库
-- 检查 Chroma 本地持久化目录和向量入库是否正常
-- 尝试调整检索参数（Top-K、阈值等）
+反思轮次由 `MAX_REFLECTION_ROUNDS` 控制，当前配置上限为 3 轮；同时使用工具步骤上限和 LangGraph 递归上限防止流程无限循环。达到上限后，系统基于现有证据生成部分答案、冲突说明或拒答，不再无条件调用模型重试。
 
-### 3. 联网搜索不工作？
-
-- 检查 `WEB_SEARCH_API_KEY` 是否配置
-- 确保前端已开启"联网搜索"开关
-- 验证 Tavily API 配额是否充足
-
-## 许可证
-
-MIT License
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
+这里的重试是面向检索与证据缺口的流程级重试，不是对同一次模型请求进行无意义的重复调用。每一轮都必须改变查询、补充证据或调整回答策略。

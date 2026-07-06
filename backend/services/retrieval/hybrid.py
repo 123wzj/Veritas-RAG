@@ -13,20 +13,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    from db.chroma.connection import chroma_client
-    from db.mysql.connection import SessionLocal
-    from embeddings.embeddings import get_embeddings
-    from embeddings.sparse import get_sparse_embedding
-    from models.database.knowledge import ChunkTable
-    from services.retrieval.diversity import cap_by_group, merge_by_chunk_id
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.db.chroma.connection import chroma_client
-    from backend.db.mysql.connection import SessionLocal
-    from backend.embeddings.embeddings import get_embeddings
-    from backend.embeddings.sparse import get_sparse_embedding
-    from backend.models.database.knowledge import ChunkTable
-    from backend.services.retrieval.diversity import cap_by_group, merge_by_chunk_id
+from backend.db.chroma.connection import chroma_client
+from backend.db.mysql.connection import SessionLocal
+from backend.embeddings.embeddings import get_embeddings
+from backend.embeddings.sparse import get_sparse_embedding
+from backend.models.database.knowledge import ChunkTable
+from backend.services.retrieval.diversity import cap_by_group, merge_by_chunk_id
 
 
 class HybridRetriever:

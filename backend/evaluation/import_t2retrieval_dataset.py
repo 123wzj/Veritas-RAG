@@ -11,15 +11,15 @@ from pathlib import Path
 from typing import Dict, List
 
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from db.chroma.connection import chroma_client
-from db.mysql.connection import SessionLocal, init_db
-from embeddings.embeddings import get_embeddings
-from embeddings.sparse import get_sparse_embedding
-from evaluation.t2retrieval import (
+from backend.db.chroma.connection import chroma_client
+from backend.db.mysql.connection import SessionLocal, init_db
+from backend.embeddings.embeddings import get_embeddings
+from backend.embeddings.sparse import get_sparse_embedding
+from backend.evaluation.t2retrieval import (
     DATASET_REPO_ID,
     DEFAULT_DATASET_DIR,
     CorpusDoc,
@@ -27,10 +27,10 @@ from evaluation.t2retrieval import (
     load_dataset,
     select_docs_for_eval,
 )
-from models.database.knowledge import ChunkTable, DocumentTable, KnowledgeBasePermissionTable, KnowledgeBaseTable
-from models.schemas.knowledge import DocumentStatus, ModalityType
-from services.ingestion.chunker import document_chunker
-from services.retrieval.hybrid import hybrid_retriever
+from backend.models.database.knowledge import ChunkTable, DocumentTable, KnowledgeBasePermissionTable, KnowledgeBaseTable
+from backend.models.schemas.knowledge import DocumentStatus, ModalityType
+from backend.services.ingestion.chunker import document_chunker
+from backend.services.retrieval.hybrid import hybrid_retriever
 
 
 DEFAULT_KB_NAME = "public_eval_t2retrieval"

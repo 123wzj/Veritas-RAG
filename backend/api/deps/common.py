@@ -9,8 +9,8 @@ from fastapi import Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from db.mysql.connection import get_db
-from models.database.user import UserTable
+from backend.db.mysql.connection import get_db
+from backend.models.database.user import UserTable
 
 
 def get_current_user(
@@ -39,7 +39,7 @@ def get_required_user(
     default_user = db.query(UserTable).filter(UserTable.id == 1).first()
 
     if not default_user:
-        from models.database.user import UserProfileTable
+        from backend.models.database.user import UserProfileTable
 
         default_user = UserTable(
             id=1,
@@ -65,11 +65,11 @@ def get_required_user(
 
 def get_redis_cache():
     """获取 Redis 缓存依赖。"""
-    from db.redis.connection import redis_client
+    from backend.db.redis.connection import redis_client
     return redis_client
 
 
 def get_vector_client():
     """获取 Chroma 客户端依赖。"""
-    from db.chroma.connection import chroma_client
+    from backend.db.chroma.connection import chroma_client
     return chroma_client

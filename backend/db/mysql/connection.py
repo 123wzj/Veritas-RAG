@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
 
-from core.config import settings
+from backend.core.config import settings
 
 engine = create_engine(
     f"mysql+pymysql://{settings.MYSQL_USER}:{settings.MYSQL_PASSWORD}"
@@ -48,6 +48,23 @@ def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
     print(f"[schema-sync] Added column {table_name}.{column_name}")
 
 
+def _ensure_index(table_name: str, index_name: str, ddl: str) -> None:
+    inspector = inspect(engine)
+    if not inspector.has_table(table_name):
+        return
+    existing_indexes = {item["name"] for item in inspector.get_indexes(table_name)}
+    existing_indexes.update(
+        item.get("name")
+        for item in inspector.get_unique_constraints(table_name)
+        if item.get("name")
+    )
+    if index_name in existing_indexes:
+        return
+    with engine.begin() as connection:
+        connection.execute(text(ddl))
+    print(f"[schema-sync] Added index {index_name}")
+
+
 def _sync_legacy_schema() -> None:
     """
     Bring old tables up to the current minimal schema.
@@ -56,6 +73,7 @@ def _sync_legacy_schema() -> None:
     _ensure_column("sessions", "kb_id", "`kb_id` INT NULL")
     _ensure_column("sessions", "last_active", "`last_active` DATETIME NULL DEFAULT CURRENT_TIMESTAMP")
     _ensure_column("sessions", "message_count", "`message_count` INT NOT NULL DEFAULT 0")
+    _ensure_column("sessions", "title", "`title` VARCHAR(100) NULL")
     _ensure_column("sessions", "summary", "`summary` TEXT NULL")
     _ensure_column("sessions", "context", "`context` JSON NULL")
     _ensure_column("sessions", "category", "`category` VARCHAR(50) NULL")
@@ -65,7 +83,14 @@ def _sync_legacy_schema() -> None:
 
     _ensure_column("messages", "citations", "`citations` JSON NULL")
     _ensure_column("messages", "token_count", "`token_count` INT NOT NULL DEFAULT 0")
+    _ensure_column("messages", "request_id", "`request_id` VARCHAR(64) NULL")
     _ensure_column("messages", "branch_id", "`branch_id` INT NULL")
+    _ensure_index(
+        "messages",
+        "uq_messages_request_role",
+        "CREATE UNIQUE INDEX `uq_messages_request_role` "
+        "ON `messages` (`request_id`, `role`)",
+    )
 
     _ensure_column("conversation_branches", "branch_name", "`branch_name` VARCHAR(255) NULL")
     _ensure_column("conversation_branches", "parent_branch_id", "`parent_branch_id` INT NULL")
@@ -114,6 +139,12 @@ def _sync_legacy_schema() -> None:
     _ensure_column("kb_permissions", "granted_at", "`granted_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
     _ensure_column("kb_permissions", "expires_at", "`expires_at` DATETIME NULL")
 
+    with engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE `sessions` SET `title` = LEFT(`summary`, 100) "
+            "WHERE (`title` IS NULL OR `title` = '') AND `summary` IS NOT NULL"
+        ))
+
 
 def init_db() -> None:
     """Initialize tables, sync old schemas, and seed the default dev user."""
@@ -122,7 +153,7 @@ def init_db() -> None:
 
     db = SessionLocal()
     try:
-        from models.database.user import UserProfileTable, UserTable
+        from backend.models.database.user import UserProfileTable, UserTable
 
         default_user = db.query(UserTable).filter(UserTable.id == 1).first()
         if not default_user:

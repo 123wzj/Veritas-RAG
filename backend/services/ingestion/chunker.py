@@ -92,10 +92,7 @@ import re
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
-try:
-    from models.schemas.knowledge import ModalityType
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.models.schemas.knowledge import ModalityType
+from backend.models.schemas.knowledge import ModalityType
 
 
 @dataclass
@@ -150,13 +147,17 @@ class DocumentChunker:
         sentences = re.split(sentence_ends, text)
 
         result = []
-        current = ""
 
         for i in range(0, len(sentences) - 1, 2):
             sentence = sentences[i] + (sentences[i + 1] if i + 1 < len(sentences) else "")
             sentence = sentence.strip()
             if sentence:
                 result.append(sentence)
+
+        if len(sentences) % 2 == 1:
+            trailing_text = sentences[-1].strip()
+            if trailing_text:
+                result.append(trailing_text)
 
         return result
 

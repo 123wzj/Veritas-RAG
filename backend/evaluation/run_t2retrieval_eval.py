@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from db.mysql.connection import SessionLocal, init_db
-from evaluation.t2retrieval import (
+from backend.db.mysql.connection import SessionLocal, init_db
+from backend.evaluation.t2retrieval import (
     DATASET_REPO_ID,
     DEFAULT_DATASET_DIR,
     DEFAULT_REPORT_DIR,
@@ -26,9 +26,9 @@ from evaluation.t2retrieval import (
     load_dataset,
     select_queries_for_eval,
 )
-from models.database.knowledge import DocumentTable
-from services.retrieval.hybrid import hybrid_retriever
-from services.retrieval.reranker import reranker
+from backend.models.database.knowledge import DocumentTable
+from backend.services.retrieval.hybrid import hybrid_retriever
+from backend.services.retrieval.reranker import reranker
 
 
 def parse_args() -> argparse.Namespace:

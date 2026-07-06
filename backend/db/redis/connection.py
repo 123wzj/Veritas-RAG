@@ -5,7 +5,7 @@ Redis 缓存连接管理
 
 import redis
 from typing import Optional
-from core.config import settings
+from backend.core.config import settings
 
 
 class RedisClient:

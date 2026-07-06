@@ -8,10 +8,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-try:
-    from models.database.knowledge import KnowledgeBaseTable, KnowledgeBasePermissionTable
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.models.database.knowledge import KnowledgeBaseTable, KnowledgeBasePermissionTable
+from backend.models.database.knowledge import KnowledgeBaseTable, KnowledgeBasePermissionTable
 
 
 class PermissionService:

@@ -117,7 +117,8 @@ async def web_search(state: RAGState) -> Dict[str, Any]:
                 })
                 next_index += 1
 
-            current_plan["selected_evidence"] = (current_plan.get("selected_evidence") or []) + web_evidence
+            existing_evidence = current_plan.get("selected_evidence") or []
+            current_plan["selected_evidence"] = web_evidence[:4] + existing_evidence
             current_plan["need_web_search"] = False
             current_plan["need_retrieval"] = False
             current_plan["evidence_sufficient"] = len(current_plan["selected_evidence"]) > 0
@@ -132,22 +133,9 @@ async def web_search(state: RAGState) -> Dict[str, Any]:
             "data": {"count": search_count, "sub_query_count": len(updated_plans)},
         })
 
-        prompt_segments = []
-        for plan in updated_plans:
-            evidence = plan.get("selected_evidence") or []
-            if not evidence:
-                continue
-            prompt_segments.append(
-                f"子问题：{plan.get('sub_question')}\n" + "\n".join([
-                    f"{item.get('evidence_id')} | {item.get('source_type')} | title={item.get('title', '')} | snippet={(item.get('support_snippet') or item.get('snippet') or '')[:220]}"
-                    for item in evidence
-                ])
-            )
-
         return {
             "sub_query_plans": updated_plans,
             "selected_evidence": all_evidence,
-            "prompt_context": "\n\n".join(prompt_segments),
             "evidence_sufficient": bool(updated_plans) and all((plan.get("selected_evidence") or []) for plan in updated_plans),
             "used_web_search": True,
             "need_web_search": False,

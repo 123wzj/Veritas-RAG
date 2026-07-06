@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from models.database.user import SessionTable, MessageTable, ConversationBranchTable
+from backend.models.database.user import SessionTable, MessageTable, ConversationBranchTable
 
 
 class ConversationBranchService:

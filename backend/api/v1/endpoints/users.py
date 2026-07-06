@@ -11,8 +11,8 @@ from typing import List, Optional
 from datetime import datetime
 import json
 
-from db.mysql.connection import get_db
-from models.schemas.user import (
+from backend.db.mysql.connection import get_db
+from backend.models.schemas.user import (
     User,
     UserCreate,
     UserProfile,
@@ -20,9 +20,15 @@ from models.schemas.user import (
     SessionContext,
     SessionRenameRequest,
 )
-from models.database.user import UserTable, UserProfileTable, SessionTable, MessageTable
-from api.deps.common import get_required_user
-from services.chat.branch import branch_service
+from backend.models.database.user import (
+    MessageTable,
+    SessionMemoryTable,
+    SessionTable,
+    UserProfileTable,
+    UserTable,
+)
+from backend.api.deps.common import get_required_user
+from backend.services.chat.branch import branch_service
 
 router = APIRouter()
 
@@ -67,6 +73,7 @@ async def debug_info(
     sessions_info = [
         {
             "session_id": s.session_id,
+            "title": s.title or s.summary or "新对话",
             "summary": s.summary,
             "category": s.category,
             "message_count": s.message_count,
@@ -177,6 +184,7 @@ async def list_sessions(
             created_at=s.created_at,
             last_active=s.last_active,
             message_count=s.message_count,
+            title=s.title or s.summary or "新对话",
             summary=s.summary,
             category=s.category,
         )
@@ -199,6 +207,7 @@ async def create_session(
         session_id=session_id,
         user_id=current_user.id,
         message_count=0,
+        title="新对话",
     )
     db.add(session)
     db.commit()
@@ -211,6 +220,7 @@ async def create_session(
         created_at=session.created_at,
         last_active=session.last_active,
         message_count=session.message_count,
+        title=session.title or session.summary or "新对话",
         summary=session.summary,
         category=session.category,
     )
@@ -270,7 +280,7 @@ async def delete_session(
 
     try:
         # 先删除关联的对话分支
-        from models.database.user import ConversationBranchTable
+        from backend.models.database.user import ConversationBranchTable
         deleted_branches = db.query(ConversationBranchTable).filter(
             ConversationBranchTable.session_id == session_id
         ).delete()
@@ -281,6 +291,10 @@ async def delete_session(
             MessageTable.session_id == session_id
         ).delete()
         logger.info(f"删除消息: {deleted_messages} 条")
+
+        db.query(SessionMemoryTable).filter(
+            SessionMemoryTable.session_id == session_id
+        ).delete()
 
         # 最后删除会话本身
         db.delete(session)
@@ -318,7 +332,7 @@ async def rename_session(
             detail="Session not found",
         )
 
-    session.summary = payload.title.strip()
+    session.title = payload.title.strip()
     session.last_active = func.now()
     db.commit()
     db.refresh(session)
@@ -330,6 +344,7 @@ async def rename_session(
         created_at=session.created_at,
         last_active=session.last_active,
         message_count=session.message_count,
+        title=session.title or "新对话",
         summary=session.summary,
         category=session.category,
     )
@@ -362,6 +377,7 @@ async def get_session(
         created_at=session.created_at,
         last_active=session.last_active,
         message_count=session.message_count,
+        title=session.title or session.summary or "新对话",
         summary=session.summary,
         category=session.category,
     )
@@ -422,6 +438,7 @@ async def update_session(
         created_at=session.created_at,
         last_active=session.last_active,
         message_count=session.message_count,
+        title=session.title or session.summary or "新对话",
         summary=session.summary,
         category=session.category,
     )
@@ -529,7 +546,7 @@ async def export_session(
     # 构建导出数据
     export_data = {
         "session_id": session.session_id,
-        "summary": session.summary or "未命名对话",
+        "title": session.title or session.summary or "未命名对话",
         "created_at": session.created_at.isoformat(),
         "last_active": session.last_active.isoformat(),
         "message_count": len(messages),
@@ -554,7 +571,7 @@ async def export_session(
     elif format == "markdown":
         # 生成 Markdown 格式
         md_lines = [
-            f"# {export_data['summary']}\n",
+            f"# {export_data['title']}\n",
             f"**会话 ID**: `{session_id}`  \n",
             f"**创建时间**: {export_data['created_at']}  \n",
             f"**消息数量**: {export_data['message_count']}\n",
@@ -581,7 +598,7 @@ async def export_session(
     elif format == "txt":
         # 生成纯文本格式
         txt_lines = [
-            f"会话: {export_data['summary']}",
+            f"会话: {export_data['title']}",
             f"会话 ID: {session_id}",
             f"创建时间: {export_data['created_at']}",
             f"消息数量: {export_data['message_count']}",
@@ -710,7 +727,7 @@ async def switch_branch(
         )
 
     # 验证分支存在
-    from models.database.user import ConversationBranchTable
+    from backend.models.database.user import ConversationBranchTable
     branch = db.query(ConversationBranchTable).filter(
         ConversationBranchTable.id == branch_id,
         ConversationBranchTable.session_id == session_id,
@@ -755,7 +772,7 @@ async def delete_branch(
         )
 
     # 验证分支存在
-    from models.database.user import ConversationBranchTable
+    from backend.models.database.user import ConversationBranchTable
     branch = db.query(ConversationBranchTable).filter(
         ConversationBranchTable.id == branch_id,
         ConversationBranchTable.session_id == session_id,
@@ -800,7 +817,7 @@ async def get_branch_messages(
         )
 
     # 验证分支存在
-    from models.database.user import ConversationBranchTable
+    from backend.models.database.user import ConversationBranchTable
     branch = db.query(ConversationBranchTable).filter(
         ConversationBranchTable.id == branch_id,
         ConversationBranchTable.session_id == session_id,

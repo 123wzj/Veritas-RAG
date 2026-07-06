@@ -14,20 +14,20 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 from typing import List, Dict, Any, Optional
 
-from core.config import settings
-from db.mysql.connection import get_db
-from models.schemas.knowledge import (
+from backend.core.config import settings
+from backend.db.mysql.connection import get_db
+from backend.models.schemas.knowledge import (
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
     KnowledgeBase,
     Document,
     DocumentStatus,
 )
-from models.database.knowledge import KnowledgeBaseTable, DocumentTable, ChunkTable, KnowledgeBasePermissionTable
-from api.deps.common import get_required_user
-from services.ingestion.ingestion import ingestion_service
-from services.acl.permission import permission_service
-from db.chroma.connection import chroma_client
+from backend.models.database.knowledge import KnowledgeBaseTable, DocumentTable, ChunkTable, KnowledgeBasePermissionTable
+from backend.api.deps.common import get_required_user
+from backend.services.ingestion.ingestion import ingestion_service
+from backend.services.acl.permission import permission_service
+from backend.db.chroma.connection import chroma_client
 
 router = APIRouter()
 
@@ -294,10 +294,7 @@ async def delete_knowledge_base(
         if kb_upload_dir.exists():
             shutil.rmtree(kb_upload_dir, ignore_errors=True)
 
-        try:
-            from services.retrieval.hybrid import hybrid_retriever
-        except ImportError:  # pragma: no cover - fallback for package-style imports
-            from backend.services.retrieval.hybrid import hybrid_retriever
+        from backend.services.retrieval.hybrid import hybrid_retriever
         hybrid_retriever.invalidate_sparse_cache()
     except Exception as e:
         db.rollback()

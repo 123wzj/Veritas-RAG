@@ -23,6 +23,7 @@ export interface SessionContext {
   created_at: string
   last_active: string
   message_count: number
+  title?: string
   summary?: string
   category?: string
 }

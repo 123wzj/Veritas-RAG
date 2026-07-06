@@ -14,10 +14,7 @@ from docx import Document as DocxDocument
 from pptx import Presentation
 from bs4 import BeautifulSoup
 
-try:
-    from services.vision.ocr import ocr_service
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.services.vision.ocr import ocr_service
+from backend.services.vision.ocr import ocr_service
 
 
 class DocumentParser:

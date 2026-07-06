@@ -11,6 +11,16 @@ class _FailingWebSearchService:
         raise RuntimeError("provider unavailable")
 
 
+class _SuccessfulWebSearchService:
+    async def search_with_snippets(self, query: str, max_results: int = 5):
+        return [{
+            "title": "权威来源",
+            "url": "https://example.com/result",
+            "snippet": "联网证据",
+            "score": 0.95,
+        }]
+
+
 class WebSearchNodeTest(unittest.TestCase):
     def setUp(self):
         self._original_service = web_nodes.web_search_service
@@ -59,6 +69,32 @@ class WebSearchNodeTest(unittest.TestCase):
         self.assertFalse(result["need_web_search"])
         self.assertFalse(result["sub_query_plans"][0]["need_web_search"])
         self.assertEqual(result["events"][-1]["event"], "websearch.failed")
+
+    def test_web_evidence_is_prioritized_for_downstream_evaluation(self):
+        web_nodes.web_search_service = _SuccessfulWebSearchService()
+        state = {
+            "web_enabled": True,
+            "events": [],
+            "sub_query_plans": [{
+                "sub_question": "冲突事实",
+                "route_type": "hybrid",
+                "retrieval_queries": ["冲突事实"],
+                "need_web_search": True,
+                "need_retrieval": False,
+                "selected_evidence": [{
+                    "evidence_id": "E1",
+                    "source_type": "knowledge_base",
+                    "support_snippet": "知识库证据",
+                }],
+            }],
+        }
+
+        result = asyncio.run(web_nodes.web_search(state))
+
+        evidence = result["sub_query_plans"][0]["selected_evidence"]
+        self.assertEqual(evidence[0]["source_type"], "web")
+        self.assertEqual(evidence[1]["source_type"], "knowledge_base")
+        self.assertTrue(result["used_web_search"])
 
 
 if __name__ == "__main__":

@@ -45,11 +45,73 @@ RAG（Retrieval-Augmented Generation)的核心是“检索+生成”两阶段：
 
 ### Q5：为什么要做 Dense + Sparse？
 
-Dense 和 Sparse 解决的是两类不同问题。
+**Dense 检索解决语义匹配。**
+ 它把 query 和 chunk 编码成向量，按向量相似度找内容。优点是用户不一定说出原文关键词，也能找到语义相关内容。比如用户问“怎么防止模型胡说”，dense 可能召回到“幻觉抑制、证据约束、引用生成”相关内容。
 
-可以这样回答：
+**Sparse 检索解决精确匹配。**
+ 它基于关键词、术语、编号、专有名词、英文缩写、API 名称进行匹配。比如用户问 `MAX_REFLECTION_ROUNDS`、`bge-reranker-v2-m3`、`session_id`，dense 未必稳定，但 sparse 很容易命中。
 
-> Dense 擅长语义相似，比如用户问法和文档表达不完全一样；Sparse 擅长关键词和术语命中，比如字段名、API 名、版本号、命令。知识库问答里这两类问题都会出现，所以我做了 Dense + Independent Sparse 双路召回。
+所以双路检索不是重复，而是互补：
+
+> | 检索方式 | 擅长                                 | 容易失败的场景                     |
+> | -------- | ------------------------------------ | ---------------------------------- |
+> | Dense    | 语义相似、同义表达、用户自然语言问题 | 专有名词、编号、字段名、代码变量名 |
+> | Sparse   | 精确词、术语、代码符号、标题、编号   | 用户换一种说法、没有出现原文关键词 |
+>
+> 更合理的讲法是：
+>
+> 第一阶段检索采用 Dense + Sparse 的双路召回。Dense 负责语义泛化，Sparse 负责关键词和结构化术语命中。两路结果不直接比较原始分数，因为向量相似度和 BM25 分数分布不同，所以系统使用 Weighted RRF 做排名融合。这样可以避免某一路分数天然偏高导致另一种证据被压掉。
+
+你当前的参数逻辑可以这样解释：
+
+用户最终需要的证据数量是 `top_k`，默认 6，最大 12。但这 6 条不是直接从向量库取出来的，而是经历了：
+
+```
+用户问题
+  ↓
+query rewrite / decompose / route
+  ↓
+Dense 检索召回一批候选
+Sparse 检索召回一批候选
+  ↓
+Weighted RRF 融合
+  ↓
+Reranker 精排
+  ↓
+Evidence packing 控制数量和 token
+  ↓
+生成模型使用最终证据
+```
+
+默认情况下：
+
+```
+最终证据 top_k = 6
+retrieve_hybrid 传入 top_k = max(6*3, 12) = 18
+retriever 内部 desired_top_k = 18
+Dense 路召回约 90 条
+Sparse 路召回约 90 条
+融合后进入 rerank
+rerank 后保留约 12 条
+最终 prompt 里放 6 条左右
+```
+
+这背后的设计依据是：
+
+**第一阶段宁可多召回，不能漏召回。**
+ 因为如果第一阶段没把相关文档召回来，后面的 reranker 和 LLM 都没有机会修复。
+
+**第二阶段再靠 reranker 精排。**
+ Dense 和 Sparse 只是粗筛，它们不能真正理解“这个文档是否能回答当前问题”。reranker 才是判断 query-document 匹配程度的关键。
+
+**第三阶段 evidence packing 控制成本。**
+ 最终进入 prompt 的证据不能太多，否则会增加 token 成本，也会把无关信息带进生成模型，引发回答跑偏。
+
+可以用一句话总结：
+
+> 检索层采用“宽召回、精排序、窄注入”的策略：前面扩大候选集合保证召回率，中间用 reranker 提高相关性，最后按 token budget 和引用需求压缩进入 prompt 的证据数量。
+
+
 
 ### Q6：Independent Sparse 和普通 lexical re-score 有什么区别？
 
@@ -61,19 +123,74 @@ Dense 和 Sparse 解决的是两类不同问题。
 
 ### Q7：为什么用 RRF？
 
-因为不同检索器分数不可直接比较。
+Dense 的分数可能是余弦相似度，例如 0.73、0.81；Sparse 的分数可能是 BM25，例如 8.5、15.2。它们的数值范围完全不同，直接相加不公平。
 
-可以这样回答：
+所以用 RRF，核心思想是：
 
-> Dense 和 Sparse 的分数尺度不一样，直接相加不稳定。RRF 基于排名做融合，不强依赖原始分数归一化，适合多检索器、多 query 的工程融合。
+```
+不看原始分数，看每个候选在各路检索中的排名。
+排名越靠前，贡献越大。
+如果一个文档在 Dense 和 Sparse 里都靠前，它的融合分就会更高。
+```
+
+可以这样写：
+
+```
+score(d) = dense_weight / (k + dense_rank)
+         + sparse_weight / (k + sparse_rank)
+```
+
+如果一个文档只在 Dense 中出现，它也有分；只在 Sparse 中出现，也有分；如果两路都出现，就会被加强。
+
+你当前 dense 权重 1.0，sparse 权重 0.9，可以解释为：
+
+> Dense 作为主召回通道，权重略高；Sparse 作为术语和关键词补偿通道，权重接近 Dense。这样既保证自然语言语义召回，又不会丢失专有名词、代码字段和标题编号类信息。
 
 ### Q8：为什么还需要 Reranker？
 
-召回和精排目标不同。
+Reranker 和 Dense 检索最大的区别在于：
 
-可以这样回答：
+**Dense 检索是双塔模型。**
+ query 编码一次，document 编码一次，然后比较两个向量。速度快，适合大规模召回，但它对 query 和 document 的细粒度交互理解有限。
 
-> 召回阶段目标是尽量别漏，所以候选会比较宽；Reranker 负责在候选里把最能回答问题的证据排到前面。当前实现里 Reranker 优先看 parent_content，同时保留 child snippet，这样更接近最终生成所需的证据形式。
+**Reranker 是 cross-encoder / pair scorer。**
+ 它把 `(query, document)` 放在一起输入模型，让模型直接判断“这个 document 对 query 有多相关”。它更慢，但判断更准，所以只适合对候选集精排。
+
+可以这样讲：
+
+> Dense 检索解决“从大量文档中快速找出可能相关的候选”，reranker 解决“在候选中判断哪些真的适合回答当前问题”。因此 reranker 不是替代检索，而是检索后的精排层。
+
+你当前 rerank 输入不是单纯 child chunk，而是：
+
+```
+parent_content
++ title
++ section_path
++ matched child chunk
+```
+
+这个设计很关键，要展开讲。
+
+原因是 child chunk 很短，可能只有局部片段。单看 child chunk，reranker 可能误判；拼上 parent 内容、标题和章节路径后，reranker 能看到更完整的语义上下文。
+
+可以这样解释：
+
+> 系统没有直接把 child chunk 丢给 reranker，而是构造 parent-aware rerank 文本。这样做是因为 child chunk 适合精确定位，但信息可能不完整；parent_content 提供上下文，title 和 section_path 提供文档结构，matched child 片段提供命中依据。reranker 判断的是“这个证据块整体是否能回答 query”，而不是只判断某一句是否相似。
+
+### Rerank 后为什么保留 `top_k * 2`，而不是直接保留最终 top_k
+
+你可以这样答：
+
+> Rerank 后不会立刻裁成最终 top_k，因为后面还有去重、父块回补、证据覆盖检查、引用构造和 token packing。如果精排后直接只留 6 条，一旦里面有重复父块、证据覆盖不均、引用不完整，就没有补救空间。因此系统先保留 `max(top_k*2, 8)`，给后续 evidence packing 留余量，最终再根据子问题覆盖、token budget 和引用需求压缩成真正进入 prompt 的证据。
+
+换句话说：
+
+```
+rerank_top = 候选池里最相关的一批
+final_evidence = 真正放进 prompt 的少量证据
+```
+
+它们不是同一个概念。
 
 ### Q9：Route Planning 是做什么的？
 

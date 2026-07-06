@@ -9,10 +9,7 @@ from typing import Optional
 import chromadb
 from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
 
-try:
-    from core.config import settings
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.core.config import settings
+from backend.core.config import settings
 
 
 class ChromaClientManager:

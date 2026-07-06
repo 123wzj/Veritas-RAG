@@ -9,10 +9,7 @@ LangGraph 会把 RAG 流程中的中间结果都放在这个 State 里：
 import operator
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
-try:
-    from core.config import settings
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.core.config import settings
+from backend.core.config import settings
 
 
 class RAGState(TypedDict):
@@ -92,13 +89,19 @@ class RAGState(TypedDict):
     # 用户画像、长期记忆、工作记忆等上下文信息，由 memory 节点读取。
     memory_context: Optional[Dict[str, Any]]
     # 当前会话摘要，用于多轮对话时压缩历史上下文。
-    session_summary: Optional[str]
+    session_summary: Optional[Dict[str, Any]]
+    # LLM 生成的记忆更新计划，由 API 保存回答时在同一事务内应用。
+    memory_update_plan: Optional[Dict[str, Any]]
     # 组装 prompt 时使用的额外上下文，通常由证据打包节点生成。
     prompt_context: Optional[str]
+    # Context Assembler 的总体和分区 token 估算。
+    context_token_usage: Optional[Dict[str, Any]]
 
     # ========== 流程控制与事件 ==========
     # 对外发送的事件流，前端用它展示“思考过程”和每个节点进展。
     events: List[Dict[str, Any]]
+    # Per-node wall-clock timings collected by production graph nodes.
+    latency_breakdown_ms: Dict[str, float]
     # 错误信息；某个节点失败时写入，后续由接口层返回给前端。
     error: Optional[str]
     # 已执行步骤数。Annotated + operator.add 表示 LangGraph 合并状态时做累加。
@@ -124,10 +127,13 @@ class RAGState(TypedDict):
 def create_initial_state(
     query: str,
     user_id: int,
+    request_id: Optional[str] = None,
     kb_id: Optional[int] = None,
     session_id: Optional[str] = None,
     web_enabled: bool = False,
     top_k: Optional[int] = None,
+    max_reflections: Optional[int] = None,
+    max_steps: Optional[int] = None,
 ) -> RAGState:
     """
     创建一次 RAG 请求的初始状态。
@@ -146,7 +152,7 @@ def create_initial_state(
     import uuid
 
     return {
-        "request_id": str(uuid.uuid4()),
+        "request_id": request_id or str(uuid.uuid4()),
         "session_id": session_id,
         "user_id": user_id,
         "kb_id": kb_id,
@@ -160,7 +166,7 @@ def create_initial_state(
         "route_type": None,
         "route_reason": None,
         "planned_tools": [],
-        "web_enabled": web_enabled,
+        "web_enabled": bool(web_enabled and settings.WEB_SEARCH_ENABLED),
         "top_k": max(3, min(top_k or 6, 12)),
         "retrieved_docs": [],
         "reranked_docs": [],
@@ -176,13 +182,22 @@ def create_initial_state(
         "used_web_search": False,
         "memory_context": None,
         "session_summary": None,
+        "memory_update_plan": None,
         "prompt_context": None,
+        "context_token_usage": None,
         "events": [],
+        "latency_breakdown_ms": {},
         "error": None,
         "step_count": 0,
         "reflection_count": 0,
-        "max_reflections": max(0, min(settings.MAX_REFLECTION_ROUNDS, 3)),
-        "max_steps": settings.MAX_TOOL_STEPS,
+        "max_reflections": max(
+            0,
+            min(
+                settings.MAX_REFLECTION_ROUNDS if max_reflections is None else max_reflections,
+                3,
+            ),
+        ),
+        "max_steps": max(1, min(settings.MAX_TOOL_STEPS if max_steps is None else max_steps, 20)),
         # 默认只有指定知识库时才需要检索；后续路由节点可以继续覆盖。
         "need_retrieval": kb_id is not None,
         "need_reflection": False,

@@ -1,23 +1,33 @@
 # -*- coding: utf-8 -*-
-"""OpenAI-compatible chat model initialization.
+"""Shared DeepSeek model initialization."""
 
-Prefer LLM_* settings; OPENAI_* remains as a compatibility alias.
-"""
+from functools import lru_cache
+from typing import Literal
 
-from langchain_openai import ChatOpenAI
+from langchain_deepseek import ChatDeepSeek
 
-try:
-    from core.config import settings
-except ImportError:  # pragma: no cover - fallback for package-style imports
-    from backend.core.config import settings
+from backend.core.config import settings
 
 
-def get_llm() -> ChatOpenAI:
-    """Create a ChatOpenAI instance from the project config."""
-    return ChatOpenAI(
-        model=settings.LLM_MODEL or settings.OPENAI_MODEL,
-        api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY,
-        base_url=settings.LLM_BASE_URL or settings.OPENAI_BASE_URL or None,
+ModelTier = Literal["flash", "pro"]
+
+
+@lru_cache(maxsize=2)
+def get_llm(tier: ModelTier = "flash") -> ChatDeepSeek:
+    """Create a shared DeepSeek V4 client for the requested workload tier."""
+    model = (
+        settings.DEEPSEEK_FLASH_MODEL
+        if tier == "flash"
+        else settings.DEEPSEEK_PRO_MODEL
+    )
+    return ChatDeepSeek(
+        model=model,
+        api_key=settings.DEEPSEEK_API_KEY or settings.LLM_API_KEY,
+        api_base=(
+            settings.DEEPSEEK_BASE_URL
+            or settings.LLM_BASE_URL
+            or "https://api.deepseek.com"
+        ),
         temperature=settings.LLM_TEMPERATURE,
         max_tokens=settings.LLM_MAX_TOKENS,
     )
