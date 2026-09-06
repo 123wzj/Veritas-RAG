@@ -1,5 +1,7 @@
 # Agentic RAG 实现说明
 
+上级导航：[`docs/README.md`](README.md) · 当前模块：架构与实现
+
 ## 1. 文档目的
 
 这份文档用于说明当前项目 `backend/` 目录下 Agentic RAG 的最新实现方式。  

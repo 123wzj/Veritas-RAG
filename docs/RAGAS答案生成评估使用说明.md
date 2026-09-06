@@ -1,5 +1,7 @@
 # RAGAS 答案生成评估说明
 
+上级导航：[`docs/README.md`](README.md) · 关联总流程：[RAG 检索与生成评估完整流程](<RAG检索与生成评估完整流程.md>)
+
 当前项目原来已有 `mteb/T2Retrieval` 检索阶段评估，现在新增 `backend/evaluation/run_ragas_answer_eval.py`，用于对当前系统的端到端 RAG 答案生成阶段做 RAGAS 评估。
 
 简单说：

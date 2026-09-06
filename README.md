@@ -219,4 +219,6 @@ Sparse 检索根据词项和语料统计对 MySQL 中的 Child Chunk 评分，�
 
 本 README 的架构说明以当前 `backend/` 源码和评测脚本为准。2026-09-04 审计确认：主链路使用 LangGraph、BGE-M3 Dense、独立 BM25、Weighted RRF、Rerank、Parent 回补、证据分级、Reflection、引用和 Verification，并通过 Context Assembler 管理多轮记忆预算。项目全景、入口文件、运行环境和已知边界见 [`docs/项目现状梳理.md`](docs/项目现状梳理.md)；面试版设计拆解见 [`docs/Agentic RAG 项目面试准备.md`](docs/Agentic%20RAG%20项目面试准备.md)。
 
+文档导航入口见 [`docs/README.md`](docs/README.md)，可按模块树进入对应专题文档。
+
 维护时请同步检查 `backend/graph/`、`backend/services/retrieval/`、`backend/services/context/`、`backend/evaluation/` 和 `tests/`。当前边界：独立图片可 OCR 后进入文本 RAG，文档内嵌图片的完整图文联合检索尚未接入；Sparse 为独立 BM25，不应描述为 BGE-M3 learned sparse。

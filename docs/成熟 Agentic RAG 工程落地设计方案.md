@@ -1,5 +1,7 @@
 # 成熟 Agentic RAG 工程落地设计方案
 
+上级导航：[`docs/README.md`](README.md) · 当前文档：长期工程目标与演进路线
+
 > 版本：V1.0  
 > 日期：2026-09-06  
 > 适用项目：Veritas RAG 个人知识库助手  

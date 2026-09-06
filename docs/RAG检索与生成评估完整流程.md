@@ -1,5 +1,7 @@
 # RAG 检索与生成评估完整流程
 
+上级导航：[`docs/README.md`](README.md) · 关联实现：[检索融合与端到端流程](<检索融合与端到端流程.md>)
+
 本文档整理当前 `Veritas RAG` 项目的完整 RAG 评估方案，覆盖两条主线：
 
 - **检索阶段评估**：评估 Dense、Sparse/BM25、RRF 融合、Reranker 是否能把正确证据找回来并排到前面。

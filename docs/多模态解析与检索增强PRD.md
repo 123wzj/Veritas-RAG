@@ -1,5 +1,7 @@
 # Markdown 文档多模态解析与检索增强 — PRD
 
+上级导航：[`docs/README.md`](README.md) · 所属模块：产品与版本规划
+
 | 项目 | 内容 |
 |---|---|
 | 文档 | Markdown 文档多模态解析与检索增强 PRD |
