@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 
 from backend.api.deps.common import get_required_user
 from backend.db.mysql.connection import get_db
-from backend.models.database.user import MemoryUpdateLogTable, SessionMemoryTable, SessionTable
+from backend.models.database.user import MemoryUpdateLogTable, SessionMemoryTable, SessionTable, LongTermMemoryTable
+from sqlalchemy import and_, or_
 from backend.services.memory.memory_service import memory_service
+from backend.models.schemas.memory import LongTermMemoryPatch, MemoryListResponse, LongTermMemoryResponse
 
 router = APIRouter()
 
@@ -131,31 +133,50 @@ async def delete_session_memory(
     }
 
 
-@router.get("/long-term")
+@router.get("/long-term", response_model=MemoryListResponse)
 async def list_long_term_memories(
     kb_id: Optional[int] = None,
     status: Optional[str] = "active",
     memory_type: Optional[str] = None,
+    scope_type: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
     limit: int = 100,
     current_user=Depends(get_required_user),
     db: Session = Depends(get_db),
 ):
-    return {
-        "items": memory_service.list_long_term_memories(
+    page = max(1, page)
+    page_size = max(1, min(page_size, 500))
+    count_query = db.query(LongTermMemoryTable).filter(LongTermMemoryTable.user_id == current_user.id)
+    if kb_id is not None:
+        count_query = count_query.filter(or_(LongTermMemoryTable.scope_type == "user", and_(LongTermMemoryTable.scope_type == "project", LongTermMemoryTable.kb_id == kb_id)))
+    else:
+        count_query = count_query.filter(LongTermMemoryTable.scope_type == "user")
+    if status:
+        count_query = count_query.filter(LongTermMemoryTable.status == status)
+    if memory_type:
+        count_query = count_query.filter(LongTermMemoryTable.memory_type == memory_type)
+    if scope_type:
+        count_query = count_query.filter(LongTermMemoryTable.scope_type == scope_type)
+    total = count_query.count()
+    items = memory_service.list_long_term_memories(
             user_id=current_user.id,
             kb_id=kb_id,
             status=status,
             memory_type=memory_type,
+            scope_type=scope_type,
+            page=page,
+            page_size=page_size,
             limit=limit,
             db=db,
         )
-    }
+    return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
-@router.patch("/long-term/{memory_id}")
+@router.patch("/long-term/{memory_id}", response_model=LongTermMemoryResponse)
 async def update_long_term_memory(
     memory_id: str,
-    data: Dict[str, Any],
+    data: LongTermMemoryPatch,
     current_user=Depends(get_required_user),
     db: Session = Depends(get_db),
 ):
@@ -163,8 +184,12 @@ async def update_long_term_memory(
         return memory_service.update_long_term_memory_record(
             user_id=current_user.id,
             memory_id=memory_id,
-            content=data.get("content"),
-            status=data.get("status"),
+            content=data.content,
+            status=data.status,
+            confidence=data.confidence,
+            expires_at=data.expires_at,
+            request_id=data.request_id or str(uuid.uuid4()),
+            operation=data.operation,
             db=db,
         )
     except ValueError as exc:
@@ -174,6 +199,7 @@ async def update_long_term_memory(
 @router.delete("/long-term/{memory_id}")
 async def delete_long_term_memory(
     memory_id: str,
+    request_id: Optional[str] = None,
     current_user=Depends(get_required_user),
     db: Session = Depends(get_db),
 ):
@@ -182,6 +208,8 @@ async def delete_long_term_memory(
             user_id=current_user.id,
             memory_id=memory_id,
             status="deleted",
+            operation="delete",
+            request_id=request_id or str(uuid.uuid4()),
             db=db,
         )
         return {"message": "Memory deleted", "memory": memory}
@@ -192,6 +220,7 @@ async def delete_long_term_memory(
 @router.get("/updates")
 async def list_memory_update_logs(
     session_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
     limit: int = 100,
     current_user=Depends(get_required_user),
     db: Session = Depends(get_db),
@@ -201,6 +230,8 @@ async def list_memory_update_logs(
     )
     if session_id:
         query = query.filter(MemoryUpdateLogTable.session_id == session_id)
+    if memory_id:
+        query = query.filter(MemoryUpdateLogTable.memory_id == memory_id)
     rows = (
         query.order_by(MemoryUpdateLogTable.created_at.desc())
         .limit(max(1, min(limit, 500)))

@@ -1,6 +1,6 @@
 import { create } from "zustand"
 
-import { type ChatMessage, type ChatSession, type StreamEvent } from "@/types"
+import { type ChatMessage, type ChatSession, type StreamEvent, type Citation, type TraceRun } from "@/types"
 
 interface ChatStore {
   currentSession: ChatSession | null
@@ -12,7 +12,8 @@ interface ChatStore {
   upsertSession: (session: ChatSession) => void
   addMessage: (message: ChatMessage) => void
   setMessages: (messages: ChatMessage[]) => void
-  updateLastMessage: (content: string, citations?: any[]) => void
+  updateLastMessage: (content: string, citations?: Citation[], metadata?: ChatMessage["metadata"]) => void
+  setLastMessageTrace: (trace: TraceRun) => void
   appendThinkingEventToLastMessage: (event: StreamEvent) => void
   setLastMessageThinkingCollapsed: (collapsed: boolean) => void
   setStreaming: (isStreaming: boolean) => void
@@ -103,7 +104,7 @@ export const useChatStore = create<ChatStore>((set) => ({
       }
     }),
 
-  updateLastMessage: (content, citations) =>
+  updateLastMessage: (content, citations, metadata) =>
     set((state) => {
       if (!state.currentSession) return state
 
@@ -115,6 +116,7 @@ export const useChatStore = create<ChatStore>((set) => ({
           ...lastMessage,
           content,
           citations: citations ?? lastMessage.citations,
+          metadata: metadata ? { ...lastMessage.metadata, ...metadata } : lastMessage.metadata,
         }
       }
 
@@ -130,6 +132,17 @@ export const useChatStore = create<ChatStore>((set) => ({
           item.session_id === updatedSession.session_id ? updatedSession : item
         ),
       }
+    }),
+
+  setLastMessageTrace: (trace) =>
+    set((state) => {
+      if (!state.currentSession) return state
+      const messages = [...state.currentSession.messages]
+      const lastMessage = messages[messages.length - 1]
+      if (!lastMessage || lastMessage.role !== "assistant") return state
+      messages[messages.length - 1] = { ...lastMessage, metadata: { ...lastMessage.metadata, trace, request_id: trace.request_id } }
+      const updatedSession = { ...state.currentSession, messages }
+      return { currentSession: updatedSession, sessions: state.sessions.map((item) => item.session_id === updatedSession.session_id ? updatedSession : item) }
     }),
 
   appendThinkingEventToLastMessage: (event) =>

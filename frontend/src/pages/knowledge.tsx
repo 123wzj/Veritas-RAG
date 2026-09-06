@@ -37,6 +37,7 @@ export function KnowledgePage() {
   const [newKbName, setNewKbName] = useState("")
   const [newKbDesc, setNewKbDesc] = useState("")
   const [uploadingFiles, setUploadingFiles] = useState<Record<string, number>>({})
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null)
 
   const currentKb = useMemo(
     () => knowledgeBases.find((kb) => kb.id === currentKbId),
@@ -145,7 +146,7 @@ export function KnowledgePage() {
           const uploadError = error as Error & { status?: number; detail?: any }
           const detail = uploadError.detail
               if (uploadError.status === 400 && detail?.code === "unsupported_file_type") {
-                window.alert("V1 仅支持 Markdown（.md）文件。")
+                setUploadNotice(detail.message || "V1 仅支持 Markdown（.md）文件。")
                 continue
               }
               if (uploadError.status === 409 && detail?.code === "same_filename") {
@@ -164,7 +165,7 @@ export function KnowledgePage() {
       setShowUploadDialog(false)
     } catch (error) {
       console.error("Failed to upload documents:", error)
-      window.alert("上传文件失败，请检查文件格式或稍后重试。")
+      setUploadNotice(error instanceof Error ? error.message : "上传文件失败，请检查文件格式或稍后重试。")
     } finally {
       setUploadingFiles({})
     }
@@ -357,6 +358,7 @@ export function KnowledgePage() {
             <DialogDescription>V1 仅支持 Markdown（.md）格式；其他格式将在后续版本开放。</DialogDescription>
           </DialogHeader>
           <div className="py-4">
+            {uploadNotice && <div role="alert" className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{uploadNotice}</div>}
             <label className="flex h-36 w-full cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-border bg-muted/45 transition-colors hover:bg-muted">
               <UploadCloud className="mb-3 h-8 w-8 text-primary" />
               <p className="text-sm font-medium">点击选择文件</p>

@@ -64,6 +64,7 @@ class SessionTable(Base):
     summary = Column(Text, nullable=True)
     context = Column(JSON, nullable=True)
     category = Column(String(50), nullable=True, index=True)
+    archived = Column(Boolean, default=False, nullable=False, index=True)
 
 
 class MessageTable(Base):
@@ -133,7 +134,10 @@ class LongTermMemoryTable(Base):
     normalized_key = Column(String(255), nullable=False)
     keywords = Column(JSON, nullable=True)
     confidence = Column(Float, default=0.8, nullable=False)
+    source = Column(String(30), default="inferred", nullable=False, index=True)
     status = Column(String(20), default="active", nullable=False, index=True)
+    last_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     source_session_id = Column(String(64), nullable=True, index=True)
     source_message_id = Column(Integer, nullable=True, index=True)
     superseded_by = Column(String(64), nullable=True)
@@ -199,4 +203,48 @@ class AnswerFeedbackTable(Base):
     user_id = Column(Integer, nullable=False, index=True)
     rating = Column(String(20), nullable=False)
     comment = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("request_id", "user_id", name="uq_answer_feedback_request_user"),
+    )
+
+
+class RAGRunTable(Base):
+    __tablename__ = "rag_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(64), nullable=False, index=True)
+    kb_id = Column(Integer, nullable=True, index=True)
+    route_type = Column(String(40), nullable=True)
+    final_status = Column(String(30), nullable=False, default="running")
+    answer_mode = Column(String(40), nullable=True)
+    reflection_count = Column(Integer, nullable=False, default=0)
+    total_latency_ms = Column(Integer, nullable=True)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    selected_evidence_ids = Column(JSON, nullable=True)
+    selected_memory_ids = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class RAGSpanTable(Base):
+    __tablename__ = "rag_spans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, index=True)
+    span_name = Column(String(60), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="completed")
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    model_name = Column(String(100), nullable=True)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    metadata_json = Column("metadata", JSON, nullable=True)
+    error = Column(Text, nullable=True)

@@ -104,3 +104,8 @@ class ChunkWithVector(ChunkMetadata):
     dense_vector: Optional[List[float]] = None
     sparse_vector: Optional[dict] = None
     image_vector: Optional[List[float]] = None
+
+
+class CapabilitiesResponse(BaseModel):
+    ingestion: Dict[str, Any]
+    retrieval: Dict[str, str]

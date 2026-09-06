@@ -3,6 +3,7 @@ import {
   Archive,
   Database,
   Download,
+  GitBranch,
   Globe2,
   MessageSquarePlus,
   PanelLeftClose,
@@ -27,6 +28,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ragService } from "@/services/rag"
 import { userService } from "@/services/user"
+import { traceService } from "@/services/trace"
 import { useChatStore } from "@/stores/chat"
 import { useKnowledgeStore } from "@/stores/knowledge"
 import { type ChatMessage as ChatMessageType, type ChatSession, type SessionContext } from "@/types"
@@ -231,6 +233,18 @@ export function ChatPage() {
     }
   }
 
+  const handleArchiveSession = async (sessionId: string, event: MouseEvent) => {
+    event.stopPropagation()
+    try { await userService.setSessionArchived(sessionId, true); await loadSessions() } catch (error) { console.error("Failed to archive session:", error) }
+  }
+
+  const handleCreateBranch = async (session: ChatSession, event: MouseEvent) => {
+    event.stopPropagation()
+    const lastMessage = [...session.messages].reverse().find((message) => message.id && /^\d+$/.test(message.id))
+    if (!lastMessage) return
+    try { await userService.createBranch(session.session_id, Number(lastMessage.id), "方案分支"); } catch (error) { console.error("Failed to create branch:", error) }
+  }
+
   const handleSendMessage = async (content: string) => {
     if (isStreaming) return
     let workingSession = currentSession
@@ -271,7 +285,13 @@ export function ChatPage() {
               store.updateLastMessage(answerContent, citations)
               break
             case "answer.completed":
-              store.updateLastMessage(event.data?.answer || answerContent, event.data?.citations || citations)
+              store.updateLastMessage(event.data?.answer || answerContent, event.data?.citations || citations, { request_id: event.data?.request_id })
+              if (event.data?.request_id) {
+                void traceService.getSessionTrace(workingSession.session_id, event.data.request_id).then((trace) => {
+                  const run = trace.runs.find((item) => item.request_id === event.data.request_id)
+                  if (run) store.setLastMessageTrace(run)
+                }).catch(() => undefined)
+              }
               store.setLastMessageThinkingCollapsed(true)
               store.setStreaming(false)
               void Promise.all([loadSessions(), loadCategories()])
@@ -370,6 +390,7 @@ export function ChatPage() {
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(event) => void handleRenameSession(session.session_id, event)}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" title="创建分支" onClick={(event) => void handleCreateBranch(session, event)}><GitBranch className="h-3.5 w-3.5" /></Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(event) => event.stopPropagation()}>
@@ -403,6 +424,7 @@ export function ChatPage() {
                     <Button variant="ghost" size="icon" className="ml-auto h-8 w-8 text-destructive" onClick={(event) => void handleDeleteSession(session.session_id, event)}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" title="归档会话" onClick={(event) => void handleArchiveSession(session.session_id, event)}><Archive className="h-3.5 w-3.5" /></Button>
                   </div>
                 </div>
               ))}

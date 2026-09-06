@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
@@ -384,7 +384,10 @@ class MemoryService:
             "normalized_key": memory.normalized_key,
             "keywords": memory.keywords or [],
             "confidence": float(memory.confidence or 0.0),
+            "source": memory.source or "inferred",
             "status": memory.status,
+            "last_confirmed_at": memory.last_confirmed_at.isoformat() if memory.last_confirmed_at else None,
+            "expires_at": memory.expires_at.isoformat() if memory.expires_at else None,
             "source_session_id": memory.source_session_id,
             "source_message_id": memory.source_message_id,
             "access_count": int(memory.access_count or 0),
@@ -440,6 +443,7 @@ class MemoryService:
             .filter(
                 LongTermMemoryTable.user_id == user_id,
                 LongTermMemoryTable.status == "active",
+                or_(LongTermMemoryTable.expires_at.is_(None), LongTermMemoryTable.expires_at > datetime.now()),
                 or_(
                     LongTermMemoryTable.kb_id.is_(None),
                     LongTermMemoryTable.kb_id == kb_id,
@@ -1177,6 +1181,23 @@ class MemoryService:
                     target = None
 
             if action_type == "create":
+                source = action.get("source") or "inferred"
+                proposed_status = action.get("status") or ("pending_confirmation" if source == "inferred" else "active")
+                # A rejected/deleted fact is a tombstone: automatic inference cannot recreate it.
+                tombstone = (
+                    db.query(LongTermMemoryTable)
+                    .filter(
+                        LongTermMemoryTable.user_id == user_id,
+                        LongTermMemoryTable.kb_id == action_kb_id,
+                        LongTermMemoryTable.scope_type == action_scope,
+                        LongTermMemoryTable.memory_type == (action.get("memory_type") or "project_context"),
+                        LongTermMemoryTable.normalized_key == (action.get("normalized_key") or ""),
+                        LongTermMemoryTable.status.in_(["rejected", "deleted"]),
+                    )
+                    .first()
+                )
+                if tombstone and source == "inferred":
+                    continue
                 duplicate = (
                     db.query(LongTermMemoryTable)
                     .filter(
@@ -1191,7 +1212,7 @@ class MemoryService:
                         LongTermMemoryTable.normalized_key == (
                             action.get("normalized_key") or ""
                         ),
-                        LongTermMemoryTable.status == "active",
+                        LongTermMemoryTable.status.in_(["active", "pending_confirmation"]),
                     )
                     .first()
                 )
@@ -1240,7 +1261,8 @@ class MemoryService:
                     normalized_key=action.get("normalized_key") or "",
                     keywords=action.get("keywords") or [],
                     confidence=action.get("confidence") or 0.8,
-                    status="active",
+                    source=source,
+                    status=proposed_status,
                     source_session_id=session_id,
                     source_message_id=assistant_message_id,
                     memory_metadata={"created_by": "llm_memory_updater"},
@@ -1288,7 +1310,8 @@ class MemoryService:
                     normalized_key=action.get("normalized_key") or target.normalized_key,
                     keywords=action.get("keywords") or target.keywords,
                     confidence=action.get("confidence") or target.confidence,
-                    status="active",
+                    source=action.get("source") or "inferred",
+                    status=action.get("status") or ("pending_confirmation" if (action.get("source") or "inferred") == "inferred" else "active"),
                     source_session_id=session_id,
                     source_message_id=assistant_message_id,
                     memory_metadata={"created_by": "llm_memory_updater"},
@@ -1379,19 +1402,26 @@ class MemoryService:
         kb_id: Optional[int] = None,
         status: Optional[str] = "active",
         memory_type: Optional[str] = None,
+        scope_type: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         query = db.query(LongTermMemoryTable).filter(LongTermMemoryTable.user_id == user_id)
         if kb_id is not None:
             query = query.filter(or_(
-                LongTermMemoryTable.kb_id.is_(None),
-                LongTermMemoryTable.kb_id == kb_id,
+                LongTermMemoryTable.scope_type == "user",
+                and_(LongTermMemoryTable.scope_type == "project", LongTermMemoryTable.kb_id == kb_id),
             ))
+        else:
+            query = query.filter(LongTermMemoryTable.scope_type == "user")
         if status:
             query = query.filter(LongTermMemoryTable.status == status)
         if memory_type:
             query = query.filter(LongTermMemoryTable.memory_type == memory_type)
-        rows = query.order_by(LongTermMemoryTable.updated_at.desc()).limit(max(1, min(limit, 500))).all()
+        if scope_type:
+            query = query.filter(LongTermMemoryTable.scope_type == scope_type)
+        rows = query.order_by(LongTermMemoryTable.updated_at.desc()).offset(max(page - 1, 0) * max(1, page_size)).limit(max(1, min(page_size or limit, 500))).all()
         return [self._serialize_long_term(row) for row in rows]
 
     def update_long_term_memory_record(
@@ -1402,6 +1432,10 @@ class MemoryService:
         db: Session,
         content: Optional[str] = None,
         status: Optional[str] = None,
+        confidence: Optional[float] = None,
+        expires_at: Optional[datetime] = None,
+        request_id: Optional[str] = None,
+        operation: Optional[str] = None,
     ) -> Dict[str, Any]:
         memory = (
             db.query(LongTermMemoryTable)
@@ -1413,15 +1447,44 @@ class MemoryService:
         )
         if not memory:
             raise ValueError("Memory not found")
+        if request_id:
+            existing_log = db.query(MemoryUpdateLogTable).filter(
+                MemoryUpdateLogTable.request_id == request_id,
+                MemoryUpdateLogTable.user_id == user_id,
+                MemoryUpdateLogTable.memory_id == memory_id,
+            ).first()
+            if existing_log:
+                return self._serialize_long_term(memory)
+        before = self._serialize_long_term(memory)
         if content is not None:
             memory.content = self._trim_text(content, 1200)
             memory.normalized_key = self._trim_text(memory.content.lower(), 255)
             memory.keywords = self._extract_keywords(memory.content)
         if status is not None:
-            if status not in {"active", "inactive", "deleted"}:
+            if status not in {"active", "pending_confirmation", "rejected", "inactive", "deleted", "superseded"}:
                 raise ValueError("Unsupported memory status")
             memory.status = status
             memory.valid_to = None if status == "active" else datetime.now()
+            if status == "active":
+                memory.source = "user_confirmed"
+                memory.last_confirmed_at = datetime.now()
+        if confidence is not None:
+            memory.confidence = max(0.0, min(1.0, confidence))
+        if expires_at is not None:
+            memory.expires_at = expires_at
+        if operation == "confirm":
+            memory.status = "active"
+            memory.source = "user_confirmed"
+            memory.last_confirmed_at = datetime.now()
+            memory.valid_to = None
+        elif operation == "reject":
+            memory.status = "rejected"
+            memory.valid_to = datetime.now()
+        elif operation == "delete":
+            memory.status = "deleted"
+            memory.valid_to = datetime.now()
+        if request_id:
+            self._add_update_log(request_id=request_id, user_id=user_id, session_id=None, memory_id=memory_id, action=operation or "update", before_value=before, after_value=self._serialize_long_term(memory), reason="user memory governance", db=db)
         db.commit()
         db.refresh(memory)
         return self._serialize_long_term(memory)

@@ -1,5 +1,5 @@
 import { apiClient } from "./api"
-import { type KnowledgeBase, type Document } from "@/types"
+import { type KnowledgeBase, type Document, type Capabilities } from "@/types"
 
 export const knowledgeService = {
   /**
@@ -110,6 +110,9 @@ export const knowledgeService = {
    */
   async getDocuments(kbId: number): Promise<Document[]> {
     return apiClient.get<Document[]>(`/knowledge/${kbId}/documents`)
+  },
+  async getCapabilities(kbId: number): Promise<Capabilities> {
+    return apiClient.get<Capabilities>(`/knowledge/${kbId}/capabilities`)
   },
 
   /**

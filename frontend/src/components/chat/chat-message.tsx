@@ -1,10 +1,13 @@
 import { useMemo, useState, type HTMLAttributes, type ReactNode } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react"
+import { ChevronDown, ChevronRight, ExternalLink, ThumbsDown, ThumbsUp } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { type ChatMessage } from "@/types"
+import { traceService } from "@/services/trace"
+import { Textarea } from "@/components/ui/textarea"
+import { Button } from "@/components/ui/button"
 
 interface ChatMessageProps {
   message: ChatMessage
@@ -15,6 +18,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
   const [manualThinkingCollapsed, setManualThinkingCollapsed] = useState<boolean | null>(null)
   const [referencesCollapsed, setReferencesCollapsed] = useState(true)
   const [expandedCitationIds, setExpandedCitationIds] = useState<Set<string>>(new Set())
+  const [feedback, setFeedback] = useState<"positive" | "negative" | null>(null)
+  const [comment, setComment] = useState("")
+  const [feedbackNotice, setFeedbackNotice] = useState("")
+  const [runCollapsed, setRunCollapsed] = useState(true)
+  const [memoryCollapsed, setMemoryCollapsed] = useState(true)
   const thinkingEvents = message.thinkingEvents || []
   const thinkingCollapsed = manualThinkingCollapsed ?? message.thinkingCollapsed ?? false
 
@@ -144,6 +152,20 @@ export function ChatMessage({ message }: ChatMessageProps) {
                   })}
                 </div>
               </CollapsiblePanel>
+            )}
+
+            {message.metadata?.request_id && (
+              <div className="mt-5 space-y-3">
+                <div className="flex items-center gap-1">
+                  <Button size="icon" variant={feedback === "positive" ? "secondary" : "ghost"} title="有帮助" onClick={() => setFeedback("positive")}><ThumbsUp className="h-4 w-4" /></Button>
+                  <Button size="icon" variant={feedback === "negative" ? "secondary" : "ghost"} title="需要改进" onClick={() => setFeedback("negative")}><ThumbsDown className="h-4 w-4" /></Button>
+                  {feedback && <Button size="sm" onClick={() => void traceService.submitFeedback({ request_id: message.metadata?.request_id || "", rating: feedback, comment: comment || undefined }).then(() => { setFeedbackNotice("反馈已保存") }).catch(() => { setFeedbackNotice("反馈提交失败") })}>提交反馈</Button>}
+                  {feedbackNotice && <span role="status" className="text-xs text-muted-foreground">{feedbackNotice}</span>}
+                </div>
+                {feedback && <Textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="可选：告诉我们哪里需要改进" rows={2} />}
+                {message.metadata?.trace && <CollapsiblePanel title="运行详情" countLabel={`${message.metadata.trace.spans.length} 个 span`} collapsed={runCollapsed} onToggle={() => setRunCollapsed((value) => !value)}><div className="space-y-2 border-t border-border px-3 py-3 text-xs"><div>request_id: <code>{message.metadata.trace.request_id}</code></div><div>route_type: {message.metadata.trace.route_type || "未记录"} · answer_mode: {message.metadata.trace.answer_mode || "未记录"}</div><div>检索证据 {message.metadata.trace.selected_evidence_ids.length} 条 · 使用记忆 {message.metadata.trace.selected_memory_ids.length} 条 · 反思 {message.metadata.trace.reflection_count} 次</div>{message.metadata.trace.spans.map((span) => <div key={span.id} className="flex justify-between gap-3 rounded bg-white px-2 py-1"><span>{span.span_name}</span><span>{span.latency_ms ?? 0} ms</span></div>)}<div>最终状态：{message.metadata.trace.final_status}</div></div></CollapsiblePanel>}
+                {message.metadata?.trace && message.metadata.trace.selected_memory_ids.length > 0 && <CollapsiblePanel title="使用的记忆" countLabel={`${message.metadata.trace.selected_memory_ids.length} 条`} collapsed={memoryCollapsed} onToggle={() => setMemoryCollapsed((value) => !value)}><div className="border-t border-border px-3 py-3 text-xs text-muted-foreground">{message.metadata.trace.selected_memory_ids.join("、")}</div></CollapsiblePanel>}
+              </div>
             )}
           </>
         )}

@@ -1,5 +1,5 @@
 import { apiClient } from "./api"
-import { type User, type UserProfile, type SessionContext } from "@/types"
+import { type User, type UserProfile, type SessionContext, type SessionBranch } from "@/types"
 
 export const userService = {
   /**
@@ -61,6 +61,9 @@ export const userService = {
     const url = `/users/sessions/${sessionId}?category=${encodeURIComponent(categoryParam)}`
     return apiClient.patch<any>(url)
   },
+  async setSessionArchived(sessionId: string, archived: boolean): Promise<SessionContext> {
+    return apiClient.patch<SessionContext>(`/users/sessions/${sessionId}?archived=${archived}`)
+  },
 
   /**
    * 获取会话分类列表
@@ -113,6 +116,19 @@ export const userService = {
     link.click()
     document.body.removeChild(link)
     window.URL.revokeObjectURL(downloadUrl)
+  },
+
+  async listBranches(sessionId: string): Promise<{ branches: SessionBranch[] }> {
+    return apiClient.get(`/users/sessions/${sessionId}/branches`)
+  },
+  async createBranch(sessionId: string, fromMessageId: number, branchName?: string): Promise<SessionBranch> {
+    return apiClient.post(`/users/sessions/${sessionId}/branches?from_message_id=${fromMessageId}${branchName ? `&branch_name=${encodeURIComponent(branchName)}` : ""}`, {})
+  },
+  async switchBranch(sessionId: string, branchId: number): Promise<{ message: string }> {
+    return apiClient.post(`/users/sessions/${sessionId}/branches/${branchId}/switch`, {})
+  },
+  async deleteBranch(sessionId: string, branchId: number): Promise<{ message: string }> {
+    return apiClient.delete(`/users/sessions/${sessionId}/branches/${branchId}`)
   },
 
   /**

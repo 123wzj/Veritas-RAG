@@ -74,6 +74,7 @@ class SessionContext(BaseModel):
     summary: Optional[str] = None
     category: Optional[str] = None
     context: Optional[dict[str, Any]] = None
+    archived: bool = False
 
 
 class SessionRenameRequest(BaseModel):

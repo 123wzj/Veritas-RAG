@@ -22,6 +22,7 @@ from backend.models.schemas.knowledge import (
     KnowledgeBase,
     Document,
     DocumentStatus,
+    CapabilitiesResponse,
 )
 from backend.models.database.knowledge import KnowledgeBaseTable, DocumentTable, ChunkTable, KnowledgeBasePermissionTable
 from backend.api.deps.common import get_required_user
@@ -597,7 +598,7 @@ async def delete_document(
     return {"message": "Document deleted successfully"}
 
 
-@router.get("/{kb_id}/capabilities")
+@router.get("/{kb_id}/capabilities", response_model=CapabilitiesResponse)
 async def knowledge_capabilities(
     kb_id: int,
     current_user=Depends(get_required_user),

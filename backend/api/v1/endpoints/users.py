@@ -26,9 +26,12 @@ from backend.models.database.user import (
     SessionTable,
     UserProfileTable,
     UserTable,
+    RAGRunTable,
+    RAGSpanTable,
 )
 from backend.api.deps.common import get_required_user
 from backend.services.chat.branch import branch_service
+from backend.models.schemas.memory import TraceResponse
 
 router = APIRouter()
 
@@ -165,16 +168,20 @@ async def update_user_profile(
 
 @router.get("/sessions", response_model=List[SessionContext])
 async def list_sessions(
+    include_archived: bool = Query(False),
     current_user = Depends(get_required_user),
     db: Session = Depends(get_db),
 ):
     """
     获取用户的所有会话
     """
-    sessions = db.query(SessionTable).filter(
+    session_query = db.query(SessionTable).filter(
         SessionTable.user_id == current_user.id,
         SessionTable.message_count > 0,
-    ).order_by(SessionTable.last_active.desc()).all()
+    )
+    if not include_archived:
+        session_query = session_query.filter(SessionTable.archived.is_(False))
+    sessions = session_query.order_by(SessionTable.last_active.desc()).all()
 
     return [
         SessionContext(
@@ -187,6 +194,7 @@ async def list_sessions(
             title=s.title or s.summary or "新对话",
             summary=s.summary,
             category=s.category,
+            archived=bool(s.archived),
         )
         for s in sessions
     ]
@@ -223,6 +231,7 @@ async def create_session(
         title=session.title or session.summary or "新对话",
         summary=session.summary,
         category=session.category,
+        archived=bool(session.archived),
     )
 
 
@@ -347,6 +356,7 @@ async def rename_session(
         title=session.title or "新对话",
         summary=session.summary,
         category=session.category,
+        archived=bool(session.archived),
     )
 
 
@@ -380,6 +390,7 @@ async def get_session(
         title=session.title or session.summary or "新对话",
         summary=session.summary,
         category=session.category,
+        archived=bool(session.archived),
     )
 
 
@@ -387,6 +398,7 @@ async def get_session(
 async def update_session(
     session_id: str,
     category: Optional[str] = Query(None, description="会话分类（__null__ 表示清除分类）"),
+    archived: Optional[bool] = Query(None),
     current_user = Depends(get_required_user),
     db: Session = Depends(get_db),
 ):
@@ -418,6 +430,8 @@ async def update_session(
         else:
             session.category = category
             logger.info(f"设置会话分类: session_id={session_id}, category={category}")
+    if archived is not None:
+        session.archived = archived
 
     try:
         db.commit()
@@ -441,6 +455,7 @@ async def update_session(
         title=session.title or session.summary or "新对话",
         summary=session.summary,
         category=session.category,
+        archived=bool(session.archived),
     )
 
 
@@ -515,7 +530,7 @@ async def get_session_messages(
     }
 
 
-@router.get("/sessions/{session_id}/trace")
+@router.get("/sessions/{session_id}/trace", response_model=TraceResponse)
 async def get_session_trace(
     session_id: str,
     request_id: Optional[str] = None,
@@ -526,11 +541,15 @@ async def get_session_trace(
     session = db.query(SessionTable).filter(SessionTable.session_id == session_id, SessionTable.user_id == current_user.id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    query = db.query(MessageTable).filter(MessageTable.session_id == session_id)
+    run_query = db.query(RAGRunTable).filter(RAGRunTable.session_id == session_id, RAGRunTable.user_id == current_user.id)
     if request_id:
-        query = query.filter(MessageTable.request_id == request_id)
-    rows = query.order_by(MessageTable.created_at.asc()).all()
-    return {"session_id": session_id, "runs": [{"request_id": row.request_id, "role": row.role, "created_at": row.created_at.isoformat() if row.created_at else None, "citations": row.citations or []} for row in rows if row.request_id]}
+        run_query = run_query.filter(RAGRunTable.request_id == request_id)
+    runs = run_query.order_by(RAGRunTable.created_at.asc()).all()
+    payload = []
+    for run in runs:
+        spans = db.query(RAGSpanTable).filter(RAGSpanTable.request_id == run.request_id).order_by(RAGSpanTable.started_at.asc()).all()
+        payload.append({"id": run.id, "request_id": run.request_id, "user_id": run.user_id, "session_id": run.session_id, "kb_id": run.kb_id, "route_type": run.route_type, "final_status": run.final_status, "answer_mode": run.answer_mode, "reflection_count": run.reflection_count, "total_latency_ms": run.total_latency_ms, "input_tokens": run.input_tokens, "output_tokens": run.output_tokens, "selected_evidence_ids": run.selected_evidence_ids or [], "selected_memory_ids": run.selected_memory_ids or [], "error": run.error, "created_at": run.created_at.isoformat() if run.created_at else None, "completed_at": run.completed_at.isoformat() if run.completed_at else None, "spans": [{"id": span.id, "request_id": span.request_id, "span_name": span.span_name, "status": span.status, "started_at": span.started_at.isoformat() if span.started_at else None, "ended_at": span.ended_at.isoformat() if span.ended_at else None, "latency_ms": span.latency_ms, "model_name": span.model_name, "input_tokens": span.input_tokens, "output_tokens": span.output_tokens, "metadata": span.metadata_json or {}, "error": span.error} for span in spans]})
+    return {"session_id": session_id, "runs": payload}
 
 
 @router.get("/sessions/{session_id}/export")

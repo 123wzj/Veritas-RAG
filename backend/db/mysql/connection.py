@@ -77,9 +77,15 @@ def _sync_legacy_schema() -> None:
     _ensure_column("sessions", "summary", "`summary` TEXT NULL")
     _ensure_column("sessions", "context", "`context` JSON NULL")
     _ensure_column("sessions", "category", "`category` VARCHAR(50) NULL")
+    _ensure_column("sessions", "archived", "`archived` TINYINT(1) NOT NULL DEFAULT 0")
 
     _ensure_column("user_profiles", "long_term_facts", "`long_term_facts` JSON NULL")
     _ensure_column("user_profiles", "working_preferences", "`working_preferences` JSON NULL")
+
+    _ensure_column("long_term_memories", "source", "`source` VARCHAR(30) NOT NULL DEFAULT 'inferred'")
+    _ensure_column("long_term_memories", "last_confirmed_at", "`last_confirmed_at` DATETIME NULL")
+    _ensure_column("long_term_memories", "expires_at", "`expires_at` DATETIME NULL")
+    _ensure_column("answer_feedback", "updated_at", "`updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
 
     _ensure_column("messages", "citations", "`citations` JSON NULL")
     _ensure_column("messages", "token_count", "`token_count` INT NOT NULL DEFAULT 0")
