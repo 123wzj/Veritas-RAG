@@ -342,7 +342,11 @@ async def upload_document(
     if file_ext not in settings.ALLOWED_FILE_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File type {file_ext} is not allowed. Allowed types: {settings.ALLOWED_FILE_EXTENSIONS}"
+            detail={
+                "code": "unsupported_file_type",
+                "message": "V1 仅支持 Markdown（.md）文档。",
+                "allowed_types": settings.ALLOWED_FILE_EXTENSIONS,
+            },
         )
 
     file_path: Optional[Path] = None
@@ -591,6 +595,20 @@ async def delete_document(
     )
 
     return {"message": "Document deleted successfully"}
+
+
+@router.get("/{kb_id}/capabilities")
+async def knowledge_capabilities(
+    kb_id: int,
+    current_user=Depends(get_required_user),
+    db: Session = Depends(get_db),
+):
+    if not permission_service.check_permission(kb_id, current_user.id, "read", db):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base not found")
+    return {
+        "ingestion": {"allowed_extensions": [".md"], "label": "Markdown only"},
+        "retrieval": {"dense": "BGE-M3", "sparse": "BM25", "reranker": "BGE"},
+    }
 
 
 # ========== 权限管理 ==========

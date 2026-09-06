@@ -105,9 +105,10 @@ class MemoryContextEngineeringTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def test_deepseek_v4_model_tiers_are_explicit(self):
+    def test_deepseek_v4_model_tiers_are_cost_controlled(self):
         self.assertEqual(get_llm("flash").model_name, "deepseek-v4-flash")
-        self.assertEqual(get_llm("pro").model_name, "deepseek-v4-pro")
+        # V1.5 deliberately maps the compatibility "pro" tier to Flash.
+        self.assertEqual(get_llm("pro").model_name, "deepseek-v4-flash")
 
     def test_context_assembler_respects_total_budget(self):
         assembler = ContextAssembler()

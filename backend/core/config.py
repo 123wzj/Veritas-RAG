@@ -67,10 +67,11 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: Optional[str] = "https://api.deepseek.com"
     DEEPSEEK_FLASH_MODEL: str = "deepseek-v4-flash"
-    DEEPSEEK_PRO_MODEL: str = "deepseek-v4-pro"
+    # V1 cost-control policy: all workloads use the Flash tier.
+    DEEPSEEK_PRO_MODEL: str = "deepseek-v4-flash"
     LLM_PROVIDER: str = "deepseek"
     LLM_API_KEY: str = ""
-    LLM_MODEL: str = "deepseek-v4-pro"
+    LLM_MODEL: str = "deepseek-v4-flash"
     LLM_BASE_URL: Optional[str] = None
     BASE_URL: Optional[str] = None
     LLM_TEMPERATURE: float = 0.7
@@ -139,7 +140,7 @@ class Settings(BaseSettings):
 
     # RAGAS evaluation uses the same DeepSeek endpoint, but a lower
     # temperature and lower concurrency make judge-style JSON outputs steadier.
-    RAGAS_LLM_MODEL: str = "deepseek-v4-pro"
+    RAGAS_LLM_MODEL: str = "deepseek-v4-flash"
     RAGAS_LLM_TEMPERATURE: float = 0.0
     RAGAS_LLM_MAX_TOKENS: Optional[int] = None
     RAGAS_LLM_TIMEOUT: int = 180
@@ -171,9 +172,9 @@ class Settings(BaseSettings):
 
     # ========== 其他配置 ==========
     MAX_UPLOAD_FILE_SIZE: int = 100 * 1024 * 1024  # 100MB
-    ALLOWED_FILE_EXTENSIONS: List[str] = [
-        ".pdf", ".docx", ".pptx", ".md", ".html", ".txt", ".png", ".jpg", ".jpeg"
-    ]
+    # V1 ingestion scope is intentionally Markdown-only. Other parsers remain
+    # available for the next ingestion milestone but are not exposed by API.
+    ALLOWED_FILE_EXTENSIONS: List[str] = [".md"]
     # 文件上传目录
     UPLOAD_DIR: str = "data/uploads"
 
@@ -188,7 +189,7 @@ class Settings(BaseSettings):
         self.UPLOAD_DIR = _resolve_project_path(self.UPLOAD_DIR)
         # All chat/reasoning tasks use DeepSeek through langchain-deepseek.
         self.LLM_PROVIDER = "deepseek"
-        self.LLM_MODEL = self.DEEPSEEK_PRO_MODEL or "deepseek-v4-pro"
+        self.LLM_MODEL = "deepseek-v4-flash"
         self.LLM_API_KEY = self.DEEPSEEK_API_KEY or self.LLM_API_KEY
         self.LLM_BASE_URL = (
             self.DEEPSEEK_BASE_URL

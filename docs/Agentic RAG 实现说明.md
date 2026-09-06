@@ -21,7 +21,7 @@
 
 - Web 框架：`FastAPI`
 - Agent 编排：`LangGraph`
-- 大模型：`DeepSeek V4`（通过 `langchain-deepseek` 的 `ChatDeepSeek` 接入；高频结构化任务使用 `deepseek-v4-flash`，生成、反思和持久记忆决策使用 `deepseek-v4-pro`）
+- 大模型：`DeepSeek V4 Flash`（通过 `langchain-deepseek` 的 `ChatDeepSeek` 接入；V1.5 所有任务统一使用 `deepseek-v4-flash` 以控制成本）
 - Embedding：`BGE-M3`（provider 可配置，当前默认本地模型）
 - Reranker：`BAAI/bge-reranker-v2-m3`
 - 向量数据库：`Chroma`
@@ -159,6 +159,8 @@ flowchart TD
 - 检索库和业务文件存储分离
 
 ## 4.2 文档解析
+
+> V1 API 当前仅开放 Markdown（`.md`）入库；其他格式解析器保留用于后续版本，暂不对外承诺。
 
 解析入口：
 

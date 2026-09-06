@@ -151,7 +151,7 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 - **框架**: FastAPI
 - **数据库**: MySQL + Redis + Chroma
-- **LLM**: LangChain + LangGraph
+- **LLM**: LangChain + LangGraph + DeepSeek V4 Flash（V1.5 全流程统一 Flash）
 - **对象存储**: S3/MinIO
 - **文档处理**: PyPDF, python-docx, unstructured
 

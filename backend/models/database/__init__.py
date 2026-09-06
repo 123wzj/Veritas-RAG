@@ -4,6 +4,7 @@
 from backend.models.database.user import (
     LongTermMemoryTable,
     MemoryUpdateLogTable,
+    AnswerFeedbackTable,
     MessageTable,
     SessionMemoryTable,
     SessionTable,
@@ -20,6 +21,7 @@ __all__ = [
     "SessionMemoryTable",
     "LongTermMemoryTable",
     "MemoryUpdateLogTable",
+    "AnswerFeedbackTable",
     "KnowledgeBaseTable",
     "DocumentTable",
     "ChunkTable",

@@ -189,3 +189,14 @@ class MemoryUpdateLogTable(Base):
             name="uq_memory_log_request_action",
         ),
     )
+
+
+class AnswerFeedbackTable(Base):
+    __tablename__ = "answer_feedback"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, index=True)
+    session_id = Column(String(64), nullable=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    rating = Column(String(20), nullable=False)
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

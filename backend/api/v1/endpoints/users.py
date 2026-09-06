@@ -515,6 +515,24 @@ async def get_session_messages(
     }
 
 
+@router.get("/sessions/{session_id}/trace")
+async def get_session_trace(
+    session_id: str,
+    request_id: Optional[str] = None,
+    current_user=Depends(get_required_user),
+    db: Session = Depends(get_db),
+):
+    """Return the persisted, user-safe run trace available for a session."""
+    session = db.query(SessionTable).filter(SessionTable.session_id == session_id, SessionTable.user_id == current_user.id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    query = db.query(MessageTable).filter(MessageTable.session_id == session_id)
+    if request_id:
+        query = query.filter(MessageTable.request_id == request_id)
+    rows = query.order_by(MessageTable.created_at.asc()).all()
+    return {"session_id": session_id, "runs": [{"request_id": row.request_id, "role": row.role, "created_at": row.created_at.isoformat() if row.created_at else None, "citations": row.citations or []} for row in rows if row.request_id]}
+
+
 @router.get("/sessions/{session_id}/export")
 async def export_session(
     session_id: str,

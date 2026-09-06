@@ -144,7 +144,11 @@ export function KnowledgePage() {
         } catch (error) {
           const uploadError = error as Error & { status?: number; detail?: any }
           const detail = uploadError.detail
-          if (uploadError.status === 409 && detail?.code === "same_filename") {
+              if (uploadError.status === 400 && detail?.code === "unsupported_file_type") {
+                window.alert("V1 仅支持 Markdown（.md）文件。")
+                continue
+              }
+              if (uploadError.status === 409 && detail?.code === "same_filename") {
             if (!window.confirm(detail.message || `知识库中已存在同名文件「${file.name}」，是否继续上传？`)) continue
             await upload(true)
             continue
@@ -215,7 +219,7 @@ export function KnowledgePage() {
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Knowledge base</p>
                 <h1 className="mt-1 text-2xl font-semibold">{currentKb?.name || "选择或创建知识库"}</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  文档会被解析为父子块，子块写入 Dense 向量和 BM25 sparse，回答时再回补父块上下文。
+                  V1 仅支持 Markdown（.md）。文档会被解析为父子块，子块写入 Dense 向量和 BM25 sparse，回答时再回补父块上下文。
                 </p>
               </div>
               <div className="flex gap-2">
@@ -350,18 +354,18 @@ export function KnowledgePage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>上传文件</DialogTitle>
-            <DialogDescription>支持 PDF、DOCX、PPTX、Markdown、TXT、HTML 与图片等格式。</DialogDescription>
+            <DialogDescription>V1 仅支持 Markdown（.md）格式；其他格式将在后续版本开放。</DialogDescription>
           </DialogHeader>
           <div className="py-4">
             <label className="flex h-36 w-full cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-border bg-muted/45 transition-colors hover:bg-muted">
               <UploadCloud className="mb-3 h-8 w-8 text-primary" />
               <p className="text-sm font-medium">点击选择文件</p>
-              <p className="mt-1 text-xs text-muted-foreground">可多选，重复文件会自动提示</p>
+              <p className="mt-1 text-xs text-muted-foreground">仅可选择 .md 文件，可多选，重复文件会自动提示</p>
               <input
                 type="file"
                 className="hidden"
                 multiple
-                accept=".pdf,.docx,.pptx,.md,.html,.txt,.png,.jpg,.jpeg"
+                accept=".md"
                 onChange={(event) => {
                   if (event.target.files && event.target.files.length > 0 && currentKbId) {
                     void handleFileUpload(currentKbId, event.target.files)

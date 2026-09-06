@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react"
 import { Link, useLocation } from "react-router-dom"
-import { BookOpen, Database, MessageSquare, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react"
+import { BookOpen, Brain, Database, MessageSquare, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -12,6 +12,7 @@ interface LayoutProps {
 const navItems = [
   { path: "/chat", icon: MessageSquare, label: "聊天" },
   { path: "/knowledge", icon: Database, label: "知识库" },
+  { path: "/memory", icon: Brain, label: "记忆" },
   { path: "/settings", icon: Settings, label: "设置" },
 ]
 
@@ -79,7 +80,7 @@ export function AppLayout({ children }: LayoutProps) {
 
       <main className="min-w-0 flex-1">
         <div className="border-b border-border bg-white px-3 py-2 lg:hidden">
-          <nav className="grid grid-cols-3 gap-2">
+          <nav className="grid grid-cols-4 gap-2">
             {navItems.map((item) => {
               const Icon = item.icon
               const isActive = location.pathname === item.path

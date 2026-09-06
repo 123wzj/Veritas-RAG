@@ -4,6 +4,7 @@ import { AppLayout } from "./components/layout/app-layout"
 import { ChatPage } from "./pages/chat"
 import { KnowledgePage } from "./pages/knowledge"
 import { SettingsPage } from "./pages/settings"
+import { MemoryPage } from "./pages/memory"
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
           <Route path="/chat" element={<AppLayout><ChatPage /></AppLayout>} />
           <Route path="/knowledge" element={<AppLayout><KnowledgePage /></AppLayout>} />
           <Route path="/settings" element={<AppLayout><SettingsPage /></AppLayout>} />
+          <Route path="/memory" element={<AppLayout><MemoryPage /></AppLayout>} />
         </Routes>
       </BrowserRouter>
     </div>

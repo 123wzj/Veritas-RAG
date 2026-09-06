@@ -19,6 +19,8 @@ from backend.api.deps.common import get_current_user
 from backend.db.mysql.connection import get_db as get_db_func
 from backend.graph.graph import run_agentic_rag
 from backend.models.schemas.rag import RAGQueryRequest
+from backend.models.database.user import AnswerFeedbackTable, MessageTable, SessionTable
+from backend.api.deps.common import get_required_user
 from backend.services.chat.turn_service import turn_service
 
 logger = logging.getLogger(__name__)
@@ -289,3 +291,24 @@ async def query_rag(
         return result
 
     raise HTTPException(status_code=500, detail=last_error or "查询失败")
+
+
+@router.post("/feedback")
+async def submit_feedback(
+    data: dict,
+    current_user=Depends(get_required_user),
+    db: Session = Depends(get_db_func),
+):
+    request_id = str(data.get("request_id") or "").strip()
+    rating = str(data.get("rating") or "").strip().lower()
+    if not request_id or rating not in {"positive", "negative"}:
+        raise HTTPException(status_code=400, detail="request_id and rating (positive|negative) are required")
+    message = db.query(MessageTable).filter(MessageTable.request_id == request_id, MessageTable.role == "assistant").first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Answer run not found")
+    session = db.query(SessionTable).filter(SessionTable.session_id == message.session_id, SessionTable.user_id == current_user.id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    row = AnswerFeedbackTable(request_id=request_id, session_id=message.session_id, user_id=current_user.id, rating=rating, comment=str(data.get("comment") or "")[:2000])
+    db.add(row); db.commit()
+    return {"id": row.id, "request_id": request_id, "rating": rating}

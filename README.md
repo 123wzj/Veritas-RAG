@@ -11,6 +11,8 @@ Veritas RAG 是一个面向私有知识库的 Agentic RAG 问答系统。它将�
 
 ## 数据入库
 
+当前 V1 的上传 API 只接受 Markdown（`.md`）文件。PDF、DOCX、PPTX、HTML、TXT 和图片解析器保留为后续扩展能力。
+
 文档入库不是直接把整篇文档写入向量库，而是采用 Parent-Child 分层切分：
 
 ```text
