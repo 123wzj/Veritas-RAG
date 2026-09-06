@@ -14,6 +14,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user"
   const [manualThinkingCollapsed, setManualThinkingCollapsed] = useState<boolean | null>(null)
   const [referencesCollapsed, setReferencesCollapsed] = useState(true)
+  const [expandedCitationIds, setExpandedCitationIds] = useState<Set<string>>(new Set())
   const thinkingEvents = message.thinkingEvents || []
   const thinkingCollapsed = manualThinkingCollapsed ?? message.thinkingCollapsed ?? false
 
@@ -26,6 +27,15 @@ export function ChatMessage({ message }: ChatMessageProps) {
       return true
     })
   }, [message.citations])
+
+  const toggleCitation = (key: string) => {
+    setExpandedCitationIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
@@ -95,27 +105,43 @@ export function ChatMessage({ message }: ChatMessageProps) {
                 className="mt-5"
               >
                 <div className="space-y-2.5 border-t border-border px-3 py-3">
-                  {citations.map((citation: any, index: number) => (
-                    <div key={citation.evidence_id || citation.chunk_id || index} className="rounded-xl border border-border bg-white px-3 py-3 text-xs">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-primary/10 px-2 py-0.5 font-semibold text-primary">
-                          {citation.evidence_id || `E${index + 1}`}
-                        </span>
-                        <span className="font-medium text-foreground">{citation.title || citation.url || "未命名来源"}</span>
-                        {citation.source_type === "web" && citation.url && (
-                          <a href={citation.url} target="_blank" rel="noreferrer" className="inline-flex items-center text-primary hover:underline">
-                            打开 <ExternalLink className="ml-1 h-3 w-3" />
-                          </a>
-                        )}
-                        {citation.section_path && <span className="text-muted-foreground">/{citation.section_path}</span>}
-                        {citation.page_no && <span className="text-muted-foreground">第 {citation.page_no} 页</span>}
-                        {typeof citation.score === "number" && <span className="text-muted-foreground">score {citation.score.toFixed(3)}</span>}
+                  {citations.map((citation: any, index: number) => {
+                    const citationKey = citation.evidence_id || citation.chunk_id || `${citation.doc_id}-${index}`
+                    const expanded = expandedCitationIds.has(citationKey)
+                    return (
+                      <div key={citationKey} className="rounded-xl border border-border bg-white px-3 py-3 text-xs">
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 text-left"
+                          onClick={() => toggleCitation(citationKey)}
+                        >
+                          <span className="rounded-full bg-primary/10 px-2 py-0.5 font-semibold text-primary">
+                            {citation.evidence_id || `E${index + 1}`}
+                          </span>
+                          <span className="font-medium text-foreground">{citation.title || citation.url || "未命名来源"}</span>
+                          {citation.source_type === "web" && citation.url && (
+                            <a
+                              href={citation.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center text-primary hover:underline"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              打开 <ExternalLink className="ml-1 h-3 w-3" />
+                            </a>
+                          )}
+                          {citation.section_path && <span className="text-muted-foreground">/{citation.section_path}</span>}
+                          {citation.page_no && <span className="text-muted-foreground">第 {citation.page_no} 页</span>}
+                          {typeof citation.score === "number" && <span className="text-muted-foreground">score {citation.score.toFixed(3)}</span>}
+                          {citation.modality && <ModalityBadge modality={citation.modality} codeLanguage={citation.code_language} />}
+                          <span className="ml-auto text-muted-foreground">
+                            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                          </span>
+                        </button>
+                        {expanded && renderCitationContent(citation)}
                       </div>
-                      {citation.snippet && (
-                        <p className="mt-2 max-h-12 overflow-hidden leading-5 text-muted-foreground">{citation.snippet}</p>
-                      )}
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </CollapsiblePanel>
             )}
@@ -124,6 +150,55 @@ export function ChatMessage({ message }: ChatMessageProps) {
       </div>
     </div>
   )
+}
+
+const MODALITY_LABELS: Record<string, string> = {
+  text: "文本",
+  image: "图片",
+  table: "表格",
+  code: "代码",
+  mixed: "混合",
+}
+
+function ModalityBadge({ modality, codeLanguage }: { modality: string; codeLanguage?: string }) {
+  const label = modality === "code" ? (codeLanguage || "代码") : (MODALITY_LABELS[modality] || modality)
+  const title = modality === "code" && codeLanguage ? `代码语言：${codeLanguage}` : undefined
+  return (
+    <span title={title} className="rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 font-medium text-primary">
+      {label}
+    </span>
+  )
+}
+
+function renderCitationContent(citation: any) {
+  // 图片证据：优先展示缩略图
+  if (citation.modality === "image" && citation.image_url) {
+    return (
+      <div className="mt-2">
+        <img
+          src={citation.image_url}
+          alt={citation.caption || citation.title || "图片证据"}
+          className="max-h-48 w-auto rounded-lg border border-border object-contain"
+        />
+        {citation.caption && <p className="mt-1 text-muted-foreground">{citation.caption}</p>}
+      </div>
+    )
+  }
+  // 表格/代码证据：整块渲染 Markdown（GFM 支持表格与代码围栏）
+  if (citation.modality === "table" || citation.modality === "code") {
+    return (
+      <div className="mt-2 max-h-56 overflow-auto rounded-lg border border-border bg-muted/40 p-2">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{citation.snippet || citation.title || ""}</ReactMarkdown>
+      </div>
+    )
+  }
+  // 文本证据：默认摘要
+  if (citation.snippet) {
+    return (
+      <p className="mt-2 max-h-12 overflow-hidden leading-5 text-muted-foreground">{citation.snippet}</p>
+    )
+  }
+  return null
 }
 
 function CollapsiblePanel({

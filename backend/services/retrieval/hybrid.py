@@ -245,6 +245,10 @@ class HybridRetriever:
                     "doc_id": row.doc_id,
                     "token_count": row.token_count,
                     "language": row.language,
+                    "modality": row.modality.value if row.modality else None,
+                    "caption": row.caption,
+                    "source_uri": row.source_uri,
+                    "code_language": row.code_language,
                     "score": 0.0,
                     "rank": 0,
                     "retrieval_type": "sparse",
@@ -308,6 +312,10 @@ class HybridRetriever:
                 "doc_id": metadata.get("doc_id"),
                 "token_count": metadata.get("token_count"),
                 "language": metadata.get("language"),
+                "modality": metadata.get("modality"),
+                "caption": metadata.get("caption"),
+                "source_uri": metadata.get("source_uri"),
+                "code_language": metadata.get("code_language"),
                 "score": round(1.0 / (1.0 + float(distance)), 6),
                 "rank": rank,
                 "retrieval_type": "dense",
@@ -346,6 +354,10 @@ class HybridRetriever:
                         "doc_id": row.doc_id or item.get("doc_id"),
                         "token_count": row.token_count or item.get("token_count"),
                         "language": row.language or item.get("language"),
+                        "modality": row.modality.value if row.modality else item.get("modality"),
+                        "caption": row.caption or item.get("caption"),
+                        "source_uri": row.source_uri or item.get("source_uri"),
+                        "code_language": row.code_language or item.get("code_language"),
                     })
                 hydrated.append(result)
             return hydrated
@@ -415,6 +427,10 @@ class HybridRetriever:
                     enriched["parent_section_path"] = parent.section_path
                     enriched["parent_page_no"] = parent.page_no
                     enriched["parent_token_count"] = parent.token_count
+                    enriched["parent_modality"] = parent.modality.value if parent.modality else None
+                    enriched["parent_caption"] = parent.caption
+                    enriched["parent_source_uri"] = parent.source_uri
+                    enriched["parent_code_language"] = parent.code_language
                 backfilled.append(enriched)
             return cap_by_group(backfilled, max_per_doc=5, max_per_parent=2, max_per_chunk=1)
         finally:

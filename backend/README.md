@@ -1,6 +1,6 @@
 # Veritas RAG - Backend
 
-基于 LangChain + LangGraph + Chroma 的 Agentic RAG 问答系统后端服务。
+基于 FastAPI、LangGraph、Chroma 和 MySQL 的 Agentic RAG 问答系统后端服务。当前主链路已包含文档解析与 Parent-Child 入库、Dense + BM25 混合检索、RRF 融合、Parent 回补、Rerank、证据评估、Reflection、引用验证和会话记忆。
 
 ## 目录结构
 
@@ -37,28 +37,36 @@ backend/
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 准备运行环境
+
+项目后端使用 Conda 环境 `cook-rag-1`（当前已验证 Python 3.12.7）：
+
+```bash
+conda activate cook-rag-1
+```
+
+### 2. 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 配置环境变量
+### 3. 配置环境变量
 
 复制 `.env.example` 为 `.env` 并填写配置：
 
 ```bash
-cp .env .env
+cp backend/.env.example .env
 ```
 
-### 3. 初始化数据库
+### 4. 初始化数据库
 
 ```bash
 # 创建 MySQL 数据库
 mysql -u root -p -e "CREATE DATABASE agentic_rag CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 ```
 
-### 4. 启动服务
+### 5. 启动服务
 
 在仓库根目录执行：
 
@@ -76,7 +84,7 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 后端内部统一使用 `backend.*` 绝对导入，不需要额外设置 `PYTHONPATH`，
 也不要从 `backend/` 目录以 `main:app` 启动。
 
-### 5. 访问 API 文档
+### 6. 访问 API 文档
 
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
@@ -98,13 +106,19 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 - `GET /api/v1/knowledge/{kb_id}/documents` - 获取文档列表
 
 ### RAG 查询
-- `POST /api/v1/rag/query` - RAG 查询（非流式，暂未实现）
+- `POST /api/v1/rag/query` - RAG 查询（非流式）
 - `POST /api/v1/rag/query/stream` - RAG 查询（流式 SSE）
+- `POST /api/v1/rag/test` - RAG 调试/测试入口
 
 ### 记忆管理
 - `GET /api/v1/memory/` - 获取用户记忆
 - `POST /api/v1/memory/sync` - 同步用户记忆
 - `DELETE /api/v1/memory/sessions/{session_id}` - 删除会话记忆
+- `GET/PATCH/DELETE /api/v1/memory/long-term...` - 长期记忆管理与审计查询
+
+### 会话与分支
+- `GET/POST/PATCH/DELETE /api/v1/users/sessions...` - 会话生命周期管理
+- `GET/POST/DELETE /api/v1/users/sessions/{session_id}/branches...` - 会话分支管理
 
 ## 数据库 Schema
 
@@ -124,21 +138,14 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
   - Dense 向量：语义检索
   - 元数据过滤：用户、知识库、父子块、模态、语言
 
-## 开发状态
+## 当前边界
 
-### ✅ 已完成
-- 项目目录结构
-- 核心配置管理
-- 数据库连接（MySQL、Redis、Chroma）
-- 数据模型定义
-- API 路由骨架
-- 流式输出框架
+- 独立 PNG/JPG/JPEG 支持 OCR 后按文本入库；PDF、DOCX、PPTX 内嵌图片的完整图文联合索引尚未完成。
+- Sparse 检索当前是独立 BM25，不应描述为 BGE-M3 learned sparse。
+- DuckDuckGo provider 仍是占位实现，联网搜索主 provider 为 Tavily/SerpApi。
+- 生产环境需要收紧 CORS、替换默认密钥，并按部署环境配置 MySQL、Chroma、Redis 与模型服务。
 
-### 🚧 开发中
-- Phase 1: 文档入库与基础检索
-- Phase 2: 重排与用户记忆
-- Phase 3: LangGraph Agentic 流程
-- Phase 4: 多模态与联网增强
+完整的项目结构、调用链、验证命令和已知边界见 [`docs/项目现状梳理.md`](../docs/项目现状梳理.md)。
 
 ## 技术栈
 

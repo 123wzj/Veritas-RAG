@@ -30,7 +30,7 @@ export interface SessionContext {
 
 // ========== 知识库类型 ==========
 export type DocumentStatus = "pending" | "processing" | "completed" | "failed"
-export type ModalityType = "text" | "image" | "table" | "mixed"
+export type ModalityType = "text" | "image" | "table" | "code" | "mixed"
 
 export interface KnowledgeBase {
   id: number
@@ -81,6 +81,10 @@ export interface Citation {
   url?: string
   snippet: string
   score?: number
+  modality?: ModalityType
+  image_url?: string
+  caption?: string
+  code_language?: string
 }
 
 export interface RAGQueryResponse {

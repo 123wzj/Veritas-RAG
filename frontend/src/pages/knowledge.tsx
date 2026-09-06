@@ -422,6 +422,7 @@ function getModalityBadge(modality: string) {
     text: "文本",
     image: "图片",
     table: "表格",
+    code: "代码",
     mixed: "混合",
   }
   return <Badge variant="secondary">{labels[modality] ?? modality}</Badge>

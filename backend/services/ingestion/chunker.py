@@ -94,6 +94,12 @@ from dataclasses import dataclass
 
 from backend.models.schemas.knowledge import ModalityType
 
+# 代码块拆分阈值（tokens）：超过该值的代码块按逻辑边界拆分，否则保持块级完整
+code_split_threshold = 600
+
+# 表格拆分阈值（tokens）：超过该值的表格按数据行分组拆分，否则保持块级完整
+table_split_threshold = 600
+
 
 @dataclass
 class Chunk:
@@ -109,6 +115,7 @@ class Chunk:
     page_no: Optional[int]
     token_count: int
     metadata: Dict[str, Any]
+    code_language: Optional[str] = None
 
 
 class DocumentChunker:
@@ -119,11 +126,15 @@ class DocumentChunker:
         parent_chunk_overlap: int = 100,
         child_chunk_size: int = 300,
         child_chunk_overlap: int = 50,
+        code_split_threshold: int = code_split_threshold,
+        table_split_threshold: int = table_split_threshold,
     ):
         self.parent_chunk_size = parent_chunk_size
         self.parent_chunk_overlap = parent_chunk_overlap
         self.child_chunk_size = child_chunk_size
         self.child_chunk_overlap = child_chunk_overlap
+        self.code_split_threshold = code_split_threshold
+        self.table_split_threshold = table_split_threshold
 
     def estimate_tokens(self, text: str) -> int:
         """估算文本的 token 数量（中文约等于字符数，英文约等于词数）"""
@@ -287,21 +298,31 @@ class DocumentChunker:
                 )
 
         elif file_type == "markdown":
-            # Markdown 按章节切分
-            sections = parsed_content.get("sections", [])
-            for section in sections:
-                title = section.get("title", "未分类")
-                content = section.get("content", "")
-                self._create_chunk_from_text(
-                    content,
+            # Markdown 按 blocks 分流（来自 parse_markdown 的结构化输出）
+            blocks = parsed_content.get("blocks")
+            if blocks:
+                self._create_parent_chunks_from_blocks(
+                    blocks,
                     doc_id,
-                    None,
-                    parsed_content.get("metadata", {}).get("title"),
-                    title,
-                    None,
+                    parsed_content,
                     parent_chunks,
-                    is_parent=True,
                 )
+            else:
+                # 兼容旧结构：按章节切分
+                sections = parsed_content.get("sections", [])
+                for section in sections:
+                    title = section.get("title", "未分类")
+                    content = section.get("content", "")
+                    self._create_chunk_from_text(
+                        content,
+                        doc_id,
+                        None,
+                        parsed_content.get("metadata", {}).get("title"),
+                        title,
+                        None,
+                        parent_chunks,
+                        is_parent=True,
+                    )
 
         else:
             # 其他类型，整体作为一块
@@ -320,7 +341,16 @@ class DocumentChunker:
         # 如果 parent chunk 太大，进一步切分
         final_parents = []
         for chunk in parent_chunks:
-            if chunk.token_count > self.parent_chunk_size * 1.5:
+            # 代码块按 code_split_threshold、表格按 table_split_threshold 触发拆分，
+            # 其他块按 parent 1.5x
+            split_trigger = (
+                self.code_split_threshold
+                if chunk.modality == ModalityType.CODE
+                else self.table_split_threshold
+                if chunk.modality == ModalityType.TABLE
+                else self.parent_chunk_size * 1.5
+            )
+            if chunk.token_count > split_trigger:
                 # 需要进一步切分
                 sub_chunks = self._split_large_chunk(chunk)
                 final_parents.extend(sub_chunks)
@@ -328,6 +358,75 @@ class DocumentChunker:
                 final_parents.append(chunk)
 
         return final_parents
+
+    def _create_parent_chunks_from_blocks(
+        self,
+        blocks: List[Dict[str, Any]],
+        doc_id: str,
+        parsed_content: Dict[str, Any],
+        parent_chunks: List[Chunk],
+    ) -> None:
+        """按 blocks 的 type 分流创建 Parent Chunks。
+
+        text → 文本走整体 Parent（后续 create_child_chunks 再按句切）；
+        table/code/image → 作为独立块，不按句切分（保证结构完整）。
+        """
+        doc_title = parsed_content.get("metadata", {}).get("title")
+        # 按相邻文本块累积为一个 Parent，避免过度切碎
+        current_text: List[str] = []
+
+        def _flush_text() -> None:
+            if current_text:
+                joined = "\n".join(current_text).strip()
+                if joined:
+                    self._create_chunk_from_text(
+                        joined,
+                        doc_id,
+                        None,
+                        doc_title,
+                        None,
+                        None,
+                        parent_chunks,
+                        is_parent=True,
+                        modality=ModalityType.TEXT,
+                    )
+                current_text.clear()
+
+        for block in blocks:
+            btype = block.get("type")
+            content = block.get("content") or ""
+            if not content.strip():
+                continue
+
+            if btype == "text":
+                current_text.append(content)
+            elif btype in ("table", "code", "image"):
+                # 遇到独立块时先收拢累积的文本
+                _flush_text()
+                modality = {
+                    "table": ModalityType.TABLE,
+                    "code": ModalityType.CODE,
+                    "image": ModalityType.IMAGE,
+                }[btype]
+                self._create_chunk_from_text(
+                    content,
+                    doc_id,
+                    None,
+                    doc_title,
+                    None,
+                    None,
+                    parent_chunks,
+                    is_parent=True,
+                    modality=modality,
+                    caption=block.get("caption"),
+                    source_uri=block.get("source_uri"),
+                    code_language=block.get("language") if btype == "code" else None,
+                )
+            else:
+                # 未知类型安全回退为文本
+                current_text.append(content)
+
+        _flush_text()
 
     def create_child_chunks(
         self,
@@ -342,6 +441,33 @@ class DocumentChunker:
         child_chunks = []
 
         for parent in parent_chunks:
+            # 非 TEXT 块（表格/图片）保持块级完整，不按句切分，原样作为单个 child
+            if parent.modality == ModalityType.CODE:
+                # 代码块：按 child_chunk_size 切成多个 child（大代码块不原样透传）。
+                # _split_code_child_chunks 内部经 _create_chunk_from_text 追加到 child_chunks，
+                # 此处不再重复 extend，避免子块被写入两次。
+                self._split_code_child_chunks(parent, doc_id, child_chunks)
+                continue
+            if parent.modality == ModalityType.TABLE:
+                # 表格：按 child_chunk_size 切多个 child（大表格不原样透传），表头内嵌
+                self._split_table_child_chunks(parent, doc_id, child_chunks)
+                continue
+            if parent.modality != ModalityType.TEXT:
+                child = self._create_chunk_from_text(
+                    parent.content,
+                    doc_id,
+                    parent.chunk_id,
+                    parent.title,
+                    parent.section_path,
+                    parent.page_no,
+                    child_chunks,
+                    is_parent=False,
+                    modality=parent.modality,
+                    caption=parent.metadata.get("caption"),
+                    source_uri=parent.metadata.get("source_uri"),
+                )
+                continue
+
             # 将 parent chunk 按 child_chunk_size 切分
             sentences = self.split_by_sentences(parent.content)
             current_content = ""
@@ -396,6 +522,11 @@ class DocumentChunker:
         page_no: Optional[int],
         chunks_list: List[Chunk],
         is_parent: bool,
+        modality: ModalityType = ModalityType.TEXT,
+        *,  # 以下为多模态块可选元数据
+        caption: Optional[str] = None,
+        source_uri: Optional[str] = None,
+        code_language: Optional[str] = None,
     ) -> Chunk:
         """从文本创建 chunk"""
         chunk_id = f"{doc_id}_{'parent' if is_parent else 'child'}_{len(chunks_list)}"
@@ -407,15 +538,19 @@ class DocumentChunker:
             parent_id=parent_id,
             doc_id=doc_id,
             content=text,
-            modality=ModalityType.TEXT,
+            modality=modality,
             language=language,
             title=title,
             section_path=section_path,
             page_no=page_no,
             token_count=token_count,
+            code_language=code_language,
             metadata={
                 "is_parent": is_parent,
                 "created_at": datetime.now().isoformat(),
+                "caption": caption or "",
+                "source_uri": source_uri or "",
+                "code_language": code_language or "",
             },
         )
 
@@ -423,7 +558,25 @@ class DocumentChunker:
         return chunk
 
     def _split_large_chunk(self, chunk: Chunk) -> List[Chunk]:
-        """切分过大的 chunk"""
+        """切分过大的 chunk。
+
+        非 TEXT 块（表格/图片）保持块级完整，按句切分会破坏结构；
+        超阈值代码块按逻辑边界（空行/函数/硬切）拆成多个 Parent；
+        仅对 TEXT 块按句二次切分。
+        """
+        if chunk.modality == ModalityType.CODE:
+            # 低于阈值不拆，保持块级完整（调用方与直接调用统一行为）
+            if chunk.token_count <= self.code_split_threshold:
+                return [chunk]
+            return self._split_code_chunk(chunk)
+        if chunk.modality == ModalityType.TABLE:
+            # 低于阈值不拆，保持块级完整（调用方与直接调用统一行为）
+            if chunk.token_count <= self.table_split_threshold:
+                return [chunk]
+            return self._split_table_chunk(chunk)
+        if chunk.modality != ModalityType.TEXT:
+            return [chunk]
+
         sentences = self.split_by_sentences(chunk.content)
         sub_chunks = []
         current_content = ""
@@ -498,6 +651,372 @@ class DocumentChunker:
         words = current_content.split()
         overlap_words = min(max(self.child_chunk_overlap // 4, 8), len(words))
         return " ".join(words[-overlap_words:]) if overlap_words > 0 else ""
+
+    def _split_code_chunk(self, chunk: Chunk) -> List[Chunk]:
+        """将超大代码块按逻辑边界（空行 → 函数 → 行号）拆成多个 Parent。
+
+        每个子 Parent 保留原块的元数据（code_language/source_uri/caption 等），
+        chunk_id 后缀 `_part_N`，原代码块作为根（parent_id 指向原块）。
+        仅当块超过 code_split_threshold 时由调用方触发。
+        """
+        content = chunk.content
+        # 1) 按空行切成逻辑段
+        segments = [s.strip() for s in re.split(r"\n\s*\n", content) if s.strip()]
+        if not segments:
+            return [chunk]
+
+        # 2) 把相邻小段累积到 parent_chunk_size 再切，避免拆出过多碎块
+        merged: List[str] = []
+        buffer = ""
+        for seg in segments:
+            candidate = f"{buffer}\n\n{seg}" if buffer else seg
+            if self.estimate_tokens(candidate) <= self.parent_chunk_size:
+                buffer = candidate
+            else:
+                if buffer:
+                    merged.append(buffer)
+                buffer = seg
+        if buffer:
+            merged.append(buffer)
+
+        # 3) 单个大段仍超 1.5x → 降级为按函数/类边界拆分
+        threshold = self.parent_chunk_size * 1.5
+        final: List[str] = []
+        for part in merged:
+            if self.estimate_tokens(part) <= threshold:
+                final.append(part)
+                continue
+            final.extend(self._split_code_by_function(part, threshold))
+
+        return [self._make_code_part(chunk, part, idx) for idx, part in enumerate(final)]
+
+    def _split_code_by_function(self, part: str, threshold: float) -> List[str]:
+        """按函数/类定义行（def/class）切分单个超大代码段；仍超则按行硬切。"""
+        lines = part.split("\n")
+        pieces: List[str] = []
+        current: List[str] = []
+        current_tokens = 0
+        for line in lines:
+            # 函数/类定义行作为新段的起点（保留上一段）
+            if re.match(r"^\s*(async\s+def|def|class)\s+\w+", line) and current:
+                pieces.append("\n".join(current))
+                current = []
+                current_tokens = 0
+            current.append(line)
+            current_tokens += self.estimate_tokens(line)
+            if current_tokens > threshold:
+                pieces.append("\n".join(current))
+                current = []
+                current_tokens = 0
+        if current:
+            pieces.append("\n".join(current))
+
+        # 兜底：仍超阈值（无 def/class，或单函数极长）→ 按行硬切到阈值
+        result: List[str] = []
+        for piece in pieces:
+            if self.estimate_tokens(piece) <= threshold:
+                result.append(piece)
+            else:
+                result.extend(self._split_code_hard(piece, threshold))
+        return result
+
+    def _split_code_hard(self, text: str, threshold: float) -> List[str]:
+        """按行硬切代码段，每段不超过 threshold。"""
+        lines = text.split("\n")
+        pieces: List[str] = []
+        buffer: List[str] = []
+        current_tokens = 0
+        for line in lines:
+            line_tokens = self.estimate_tokens(line)
+            if current_tokens + line_tokens > threshold and buffer:
+                pieces.append("\n".join(buffer))
+                buffer = []
+                current_tokens = 0
+            buffer.append(line)
+            current_tokens += line_tokens
+        if buffer:
+            pieces.append("\n".join(buffer))
+        return pieces or [text]
+
+    def _make_code_part(self, chunk: Chunk, part: str, index: int) -> Chunk:
+        """根据拆分片段生成一个代码 Parent 子块。"""
+        return Chunk(
+            chunk_id=f"{chunk.chunk_id}_part_{index}",
+            parent_id=chunk.chunk_id,
+            doc_id=chunk.doc_id,
+            content=part,
+            modality=chunk.modality,
+            language=chunk.language,
+            title=chunk.title,
+            section_path=chunk.section_path,
+            page_no=chunk.page_no,
+            token_count=self.estimate_tokens(part),
+            code_language=chunk.code_language or chunk.metadata.get("code_language"),
+            metadata={
+                **chunk.metadata,
+                "is_parent": chunk.metadata.get("is_parent", False),
+                "split_from": chunk.chunk_id,
+                "code_language": chunk.code_language or chunk.metadata.get("code_language") or "",
+            },
+        )
+
+    @staticmethod
+    def _is_table_separator_line(line: str) -> bool:
+        """判断是否为 GFM 表格分隔行（如 | --- | --- |），复用 parser 的判定规则。"""
+        stripped = line.strip()
+        if not stripped:
+            return False
+        stripped = stripped.strip("|")
+        cells = [c.strip() for c in stripped.split("|")] if "|" in stripped else [stripped]
+        if not cells:
+            return False
+        return all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells)
+
+    def _split_table_lines(self, content: str) -> Tuple[List[str], Optional[str], List[str]]:
+        """把表格块内容拆成 (数据行, 分隔行, 表头行)。
+
+        GFM 表格块前两行依次为表头与分隔行；不存在分隔行时退化，
+        取第一行为表头、其余为数据行。
+        """
+        lines = [ln for ln in content.split("\n") if ln.strip()]
+        if not lines:
+            return [], None, []
+        if len(lines) >= 2 and self._is_table_separator_line(lines[1]):
+            return lines[2:], lines[1], lines[0]
+        # 无分隔行：第一行为表头
+        return lines[1:], None, lines[0]
+
+    def _split_table_chunk(self, chunk: Chunk) -> List[Chunk]:
+        """将超大表格按数据行分组拆成多个 Parent（每组内嵌表头）。
+
+        仅当块超过 table_split_threshold 时由调用方触发；若数据行合并后
+        只够一组（实际并不大），保持原块不拆，避免无意义的 `_part_0` 包装。
+        """
+        data_rows, separator, header = self._split_table_lines(chunk.content)
+        if not data_rows:
+            return [chunk]
+
+        # 按 parent_chunk_size 把数据行分组，组内 content = 表头 + 分隔行 + 数据行
+        groups: List[List[str]] = []
+        buffer: List[str] = []
+        current_tokens = 0
+        for row in data_rows:
+            row_tokens = self.estimate_tokens(row)
+            if current_tokens + row_tokens > self.parent_chunk_size and buffer:
+                groups.append(buffer)
+                buffer = []
+                current_tokens = 0
+            buffer.append(row)
+            current_tokens += row_tokens
+        if buffer:
+            groups.append(buffer)
+
+        if len(groups) <= 1:
+            return [chunk]
+
+        header_block = "\n".join([header] + ([separator] if separator else []))
+        parts: List[str] = []
+        for group in groups:
+            content = "\n".join([header_block] + group)
+            parts.append(content)
+
+        # 单组仍超 1.5x（超宽行/巨型单元格）→ 按行硬切兜底
+        threshold = self.parent_chunk_size * 1.5
+        final: List[str] = []
+        for part in parts:
+            if self.estimate_tokens(part) <= threshold:
+                final.append(part)
+            else:
+                final.extend(self._split_table_hard(part, chunk, threshold))
+
+        return [self._make_table_part(chunk, part, idx) for idx, part in enumerate(final)]
+
+    def _split_table_hard(self, text: str, chunk: Chunk, threshold: float) -> List[str]:
+        """按行硬切表格段（每段内嵌表头），每段不超过 threshold。"""
+        data_rows, separator, header = self._split_table_lines(text)
+        header_block = "\n".join([header] + ([separator] if separator else []))
+        pieces: List[str] = []
+        buffer: List[str] = []
+        current_tokens = 0
+        for row in data_rows:
+            row_tokens = self.estimate_tokens(row)
+            if current_tokens + row_tokens > threshold and buffer:
+                pieces.append("\n".join([header_block] + buffer))
+                buffer = []
+                current_tokens = 0
+            buffer.append(row)
+            current_tokens += row_tokens
+        if buffer:
+            pieces.append("\n".join([header_block] + buffer))
+        return pieces or [text]
+
+    def _make_table_part(self, chunk: Chunk, part: str, index: int) -> Chunk:
+        """根据拆分片段生成一个表格 Parent 子块（不带 code_language）。"""
+        return Chunk(
+            chunk_id=f"{chunk.chunk_id}_part_{index}",
+            parent_id=chunk.chunk_id,
+            doc_id=chunk.doc_id,
+            content=part,
+            modality=chunk.modality,
+            language=chunk.language,
+            title=chunk.title,
+            section_path=chunk.section_path,
+            page_no=chunk.page_no,
+            token_count=self.estimate_tokens(part),
+            metadata={
+                **chunk.metadata,
+                "is_parent": chunk.metadata.get("is_parent", False),
+                "split_from": chunk.chunk_id,
+            },
+        )
+
+    def _split_table_child_chunks(
+        self,
+        parent: Chunk,
+        doc_id: str,
+        child_chunks: List[Chunk],
+    ) -> List[Chunk]:
+        """将表格 Parent 按 child_chunk_size 切成多个 Child（表头内嵌）。
+
+        小于阈值的表格不拆，原样作为单个 Child（保持既有行为）；
+        大表格把数据行累积到 child_chunk_size 再切，child 的 parent_id 指向该表格 Parent。
+        """
+        if self.estimate_tokens(parent.content) <= self.table_split_threshold:
+            return [
+                self._create_chunk_from_text(
+                    parent.content,
+                    doc_id,
+                    parent.chunk_id,
+                    parent.title,
+                    parent.section_path,
+                    parent.page_no,
+                    child_chunks,
+                    is_parent=False,
+                    modality=parent.modality,
+                    caption=parent.metadata.get("caption"),
+                    source_uri=parent.metadata.get("source_uri"),
+                )
+            ]
+
+        data_rows, separator, header = self._split_table_lines(parent.content)
+        header_block = "\n".join([header] + ([separator] if separator else []))
+        children: List[Chunk] = []
+        buffer: List[str] = []
+        current_tokens = 0
+        for row in data_rows:
+            row_tokens = self.estimate_tokens(row)
+            if current_tokens + row_tokens > self.child_chunk_size and buffer:
+                children.append(
+                    self._create_chunk_from_text(
+                        "\n".join([header_block] + buffer),
+                        doc_id,
+                        parent.chunk_id,
+                        parent.title,
+                        parent.section_path,
+                        parent.page_no,
+                        child_chunks,
+                        is_parent=False,
+                        modality=parent.modality,
+                        caption=parent.metadata.get("caption"),
+                        source_uri=parent.metadata.get("source_uri"),
+                    )
+                )
+                buffer = []
+                current_tokens = 0
+            buffer.append(row)
+            current_tokens += row_tokens
+        if buffer:
+            children.append(
+                self._create_chunk_from_text(
+                    "\n".join([header_block] + buffer),
+                    doc_id,
+                    parent.chunk_id,
+                    parent.title,
+                    parent.section_path,
+                    parent.page_no,
+                    child_chunks,
+                    is_parent=False,
+                    modality=parent.modality,
+                    caption=parent.metadata.get("caption"),
+                    source_uri=parent.metadata.get("source_uri"),
+                )
+            )
+        return children
+
+    def _split_code_child_chunks(
+        self,
+        parent: Chunk,
+        doc_id: str,
+        child_chunks: List[Chunk],
+    ) -> List[Chunk]:
+        """将代码 Parent 按 child_chunk_size 切成多个 Child。
+
+        小于阈值的代码块不拆，原样作为单个 Child（保持既有行为）；
+        大代码块按行累积到 child_chunk_size 再切，child 的 parent_id 指向该代码 Parent。
+        """
+        if self.estimate_tokens(parent.content) <= self.code_split_threshold:
+            return [
+                self._create_chunk_from_text(
+                    parent.content,
+                    doc_id,
+                    parent.chunk_id,
+                    parent.title,
+                    parent.section_path,
+                    parent.page_no,
+                    child_chunks,
+                    is_parent=False,
+                    modality=parent.modality,
+                    caption=parent.metadata.get("caption"),
+                    source_uri=parent.metadata.get("source_uri"),
+                    code_language=parent.code_language or parent.metadata.get("code_language"),
+                )
+            ]
+
+        lines = parent.content.split("\n")
+        children: List[Chunk] = []
+        buffer: List[str] = []
+        current_tokens = 0
+        for line in lines:
+            line_tokens = self.estimate_tokens(line)
+            if current_tokens + line_tokens > self.child_chunk_size and buffer:
+                children.append(
+                    self._create_chunk_from_text(
+                        "\n".join(buffer),
+                        doc_id,
+                        parent.chunk_id,
+                        parent.title,
+                        parent.section_path,
+                        parent.page_no,
+                        child_chunks,
+                        is_parent=False,
+                        modality=parent.modality,
+                        caption=parent.metadata.get("caption"),
+                        source_uri=parent.metadata.get("source_uri"),
+                        code_language=parent.code_language or parent.metadata.get("code_language"),
+                    )
+                )
+                buffer = []
+                current_tokens = 0
+            buffer.append(line)
+            current_tokens += line_tokens
+        if buffer:
+            children.append(
+                self._create_chunk_from_text(
+                    "\n".join(buffer),
+                    doc_id,
+                    parent.chunk_id,
+                    parent.title,
+                    parent.section_path,
+                    parent.page_no,
+                    child_chunks,
+                    is_parent=False,
+                    modality=parent.modality,
+                    caption=parent.metadata.get("caption"),
+                    source_uri=parent.metadata.get("source_uri"),
+                    code_language=parent.code_language or parent.metadata.get("code_language"),
+                )
+            )
+        return children
 
     def chunk_document(
         self,

@@ -212,3 +212,9 @@ Sparse 检索根据词项和语料统计对 MySQL 中的 Child Chunk 评分，�
 反思轮次由 `MAX_REFLECTION_ROUNDS` 控制，当前配置上限为 3 轮；同时使用工具步骤上限和 LangGraph 递归上限防止流程无限循环。达到上限后，系统基于现有证据生成部分答案、冲突说明或拒答，不再无条件调用模型重试。
 
 这里的重试是面向检索与证据缺口的流程级重试，不是对同一次模型请求进行无意义的重复调用。每一轮都必须改变查询、补充证据或调整回答策略。
+
+## 源码现状与项目介绍
+
+本 README 的架构说明以当前 `backend/` 源码和评测脚本为准。2026-09-04 审计确认：主链路使用 LangGraph、BGE-M3 Dense、独立 BM25、Weighted RRF、Rerank、Parent 回补、证据分级、Reflection、引用和 Verification，并通过 Context Assembler 管理多轮记忆预算。项目全景、入口文件、运行环境和已知边界见 [`docs/项目现状梳理.md`](docs/项目现状梳理.md)；面试版设计拆解见 [`docs/Agentic RAG 项目面试准备.md`](docs/Agentic%20RAG%20项目面试准备.md)。
+
+维护时请同步检查 `backend/graph/`、`backend/services/retrieval/`、`backend/services/context/`、`backend/evaluation/` 和 `tests/`。当前边界：独立图片可 OCR 后进入文本 RAG，文档内嵌图片的完整图文联合检索尚未接入；Sparse 为独立 BM25，不应描述为 BGE-M3 learned sparse。

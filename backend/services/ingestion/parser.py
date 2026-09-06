@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -138,42 +139,157 @@ class DocumentParser:
         }
 
     def parse_markdown(self, file_path: str) -> Dict[str, Any]:
-        """解析 Markdown 文件"""
+        """解析 Markdown 文件为结构化 blocks（text/table/code/image）。"""
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # 简单的分块：按标题分割
-        sections = []
-        current_section = "未分类"
-        current_content = []
-
-        lines = content.split("\n")
-        for line in lines:
-            if line.startswith("#"):
-                if current_content:
-                    sections.append({
-                        "title": current_section,
-                        "content": "\n".join(current_content),
-                    })
-                current_section = line.lstrip("#").strip()
-                current_content = []
-            else:
-                current_content.append(line)
-
-        if current_content:
-            sections.append({
-                "title": current_section,
-                "content": "\n".join(current_content),
-            })
+        blocks = self._parse_markdown_blocks(content, md_dir=Path(file_path).parent)
 
         return {
             "type": "markdown",
-            "sections": sections,
+            "blocks": blocks,
             "raw_content": content,
             "metadata": {
                 "title": Path(file_path).stem,
             },
         }
+
+    def _parse_markdown_blocks(self, content: str, md_dir: Path) -> List[Dict[str, Any]]:
+        """按行扫描 Markdown，识别表格/代码围栏/图片/文本块。
+
+        图片处理：本地相对/绝对路径 → 下载到 images/ 子目录并返回本地 uri；
+                  外链 http(s) → 仅保留 alt + source_uri，不下载。
+        """
+        lines = content.split("\n")
+        blocks: List[Dict[str, Any]] = []
+        i = 0
+        n = len(lines)
+        images_dir: Optional[Path] = None
+
+        def _ensure_images_dir() -> Path:
+            nonlocal images_dir
+            if images_dir is None:
+                images_dir = md_dir / "images"
+                images_dir.mkdir(parents=True, exist_ok=True)
+            return images_dir
+
+        def _emit_text(text: str) -> None:
+            text = text.strip("\n")
+            if not text.strip():
+                return
+            if blocks and blocks[-1]["type"] == "text":
+                blocks[-1]["content"] += "\n\n" + text
+            else:
+                blocks.append({"type": "text", "content": text})
+
+        def _handle_image(match) -> None:
+            alt = match.group(1) or ""
+            raw_uri = (match.group(2) or "").strip()
+            if not raw_uri:
+                return
+            if raw_uri.startswith(("http://", "https://")):
+                # 外链：不下载，仅保留 alt + url
+                blocks.append({
+                    "type": "image",
+                    "content": f"![{alt}]({raw_uri})",
+                    "caption": alt,
+                    "source_uri": raw_uri,
+                    "local": False,
+                })
+            else:
+                # 本地路径：另存到 images/ 子目录
+                src = Path(raw_uri)
+                if not src.is_absolute():
+                    src = md_dir / src
+                if src.exists():
+                    tgt = _ensure_images_dir() / src.name
+                    if not tgt.exists():  # 避免覆盖同名
+                        tgt = _ensure_images_dir() / f"{len(blocks)}_{src.name}"
+                    try:
+                        import shutil
+                        shutil.copy2(src, tgt)
+                    except OSError:
+                        tgt = src  # 复制失败回退原路径
+                    uri = str(tgt)
+                else:
+                    uri = raw_uri
+                blocks.append({
+                    "type": "image",
+                    "content": f"![{alt}]({uri})",
+                    "caption": alt,
+                    "source_uri": uri,
+                    "local": src.exists(),
+                })
+
+        while i < n:
+            line = lines[i]
+            stripped = line.strip()
+
+            # 代码围栏
+            fence_match = re.match(r"^(`{3,}|~{3,})\s*([\w+-]*)", stripped)
+            if fence_match:
+                fence = fence_match.group(1)[0]
+                lang = fence_match.group(2) or ""
+                code_lines: List[str] = []
+                i += 1
+                closing = ("```" if fence == "`" else "~~~")
+                while i < n:
+                    if lines[i].strip().startswith(closing):
+                        i += 1
+                        break
+                    code_lines.append(lines[i])
+                    i += 1
+                blocks.append({
+                    "type": "code",
+                    "content": "\n".join(code_lines),
+                    "language": lang,
+                })
+                continue
+
+            # GFM 表格：遇到分隔行且前一行是表头时，收集整表为一个 TABLE 块
+            if self._is_table_separator(stripped) and i > 0 and lines[i - 1].strip().startswith("|"):
+                header = lines[i - 1]
+                table_rows = [header, line]
+                j = i + 1
+                while j < n and lines[j].strip().startswith("|"):
+                    table_rows.append(lines[j])
+                    j += 1
+                # 从已有文本块移除表头行
+                blocks[:] = [
+                    b for b in blocks
+                    if not (b.get("type") == "text" and header.strip() in b["content"])
+                ]
+                blocks.append({
+                    "type": "table",
+                    "content": "\n".join(table_rows),
+                })
+                i = j
+                continue
+
+            # 图片：纯图片行产出 image 块
+            img_matches = list(re.finditer(r"!\[([^\]]*)\]\(([^)\s]+)\)", line))
+            if img_matches and line.strip() == img_matches[0].group(0):
+                _handle_image(img_matches[0])
+                i += 1
+                continue
+
+            # 标题与普通文本
+            _emit_text(line)
+            i += 1
+
+        return blocks
+
+    @staticmethod
+    def _is_table_separator(line: str) -> bool:
+        """判断是否为 GFM 表格分隔行，如 | -- | -- | 或 --- | ---。"""
+        stripped = line.strip()
+        if not stripped:
+            return False
+        stripped = stripped.strip("|")
+        cells = [c.strip() for c in stripped.split("|")] if "|" in stripped else [stripped]
+        if not cells:
+            return False
+        return all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells)
 
     def parse_html(self, file_path: str) -> Dict[str, Any]:
         """解析 HTML 文件"""

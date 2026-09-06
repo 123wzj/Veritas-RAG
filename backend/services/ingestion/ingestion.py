@@ -7,6 +7,7 @@
 - MySQL: 保存文档、父块、子块正文及结构化元数据
 """
 
+import os
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.orm import Session
@@ -65,6 +66,12 @@ class IngestionService:
             parent_chunks, child_chunks = self.chunker.chunk_document(parsed, doc_id)
 
             if task_callback:
+                await task_callback("image_describing", 40, "正在生成图片语义描述...")
+
+            # 图片块：OCR 文字 + VLM 语义描述拼接（方案 A），供文本检索召回
+            self._describe_image_chunks(child_chunks)
+
+            if task_callback:
                 await task_callback("embedding", 50, "正在构建 dense/sparse 表示...")
 
             child_texts = [chunk.content for chunk in child_chunks]
@@ -103,11 +110,17 @@ class IngestionService:
             if task_callback:
                 await task_callback("completed", 100, "完成")
 
+            # 文档级 modality 与各模态块统计（用于上传响应）
+            non_text = {c.modality for c in child_chunks if c.modality != ModalityType.TEXT}
+            doc_modality = ModalityType.MIXED if non_text else ModalityType.TEXT
+
             return {
                 "doc_id": doc_id,
                 "parent_count": len(parent_chunks),
                 "child_count": len(child_chunks),
                 "status": "success",
+                "modality": doc_modality.value,
+                "modality_stats": self._count_modality_stats(child_chunks),
             }
         except Exception as e:
             if task_callback:
@@ -122,6 +135,36 @@ class IngestionService:
             self.embeddings.embed_documents(child_texts),
             self.sparse_embeddings.embed_documents(child_texts),
         )
+
+    def _describe_image_chunks(self, child_chunks: List[Chunk]) -> None:
+        """为 IMAGE 块生成可检索文本：OCR 文字 + VLM 语义描述拼接。
+
+        图片块 content 前缀 `[图片]` 标记，便于阶段2 据此定位 IMAGE 块回填图像向量。
+        VLM 描述依赖 VISION_API_KEY；未配置或失败时降级为仅 OCR 文字。
+        """
+        from backend.services.vision.ocr import ocr_service
+
+        for chunk in child_chunks:
+            if chunk.modality != ModalityType.IMAGE:
+                continue
+            source_uri = chunk.metadata.get("source_uri") or ""
+            if not source_uri or not os.path.exists(source_uri):
+                continue
+
+            try:
+                ocr_text = ocr_service.extract_text(source_uri).get("text") or ""
+            except Exception:
+                ocr_text = ""
+            try:
+                desc_text = ocr_service.describe_image(source_uri).get("text") or ""
+            except Exception:
+                desc_text = ""
+
+            combined = "\n".join(part for part in ["[图片]", ocr_text, desc_text] if part)
+            if combined.strip():
+                chunk.content = combined
+                chunk.metadata["caption"] = chunk.metadata.get("caption") or ""
+                chunk.token_count = self.chunker.estimate_tokens(combined)
 
     def _upsert_child_vectors(
         self,
@@ -188,6 +231,9 @@ class IngestionService:
             "section_path": chunk.section_path or "",
             "page_no": chunk.page_no or 0,
             "token_count": chunk.token_count,
+            "caption": chunk.metadata.get("caption") or "",
+            "source_uri": chunk.metadata.get("source_uri") or "",
+            "code_language": chunk.code_language or chunk.metadata.get("code_language") or "",
         }
 
     def _save_metadata(
@@ -208,6 +254,10 @@ class IngestionService:
         filename = original_filename or Path(file_path).name
         file_size = Path(file_path).stat().st_size
 
+        # 文档级 modality：含图片/表格/代码 → mixed，否则 text
+        non_text = {c.modality for c in child_chunks if c.modality != ModalityType.TEXT}
+        doc_modality = ModalityType.MIXED if non_text else ModalityType.TEXT
+
         doc_record = db.query(DocumentTable).filter(DocumentTable.doc_id == doc_id).first()
         if not doc_record:
             doc_record = DocumentTable(
@@ -218,7 +268,7 @@ class IngestionService:
                 file_hash=file_hash,
                 file_size=file_size,
                 status=DocumentStatus.COMPLETED,
-                modality=ModalityType.TEXT,
+                modality=doc_modality,
                 language="zh",
                 total_chunks=len(child_chunks),
             )
@@ -228,6 +278,7 @@ class IngestionService:
             doc_record.total_chunks = len(child_chunks)
             doc_record.filename = filename
             doc_record.file_hash = file_hash
+            doc_record.modality = doc_modality
 
         db.commit()
 
@@ -257,8 +308,24 @@ class IngestionService:
             chunk_record.token_count = chunk.token_count
             chunk_record.content = chunk.content
             chunk_record.sparse_vector = sparse_by_chunk_id.get(chunk.chunk_id)
+            chunk_record.caption = chunk.metadata.get("caption") or chunk_record.caption
+            chunk_record.source_uri = chunk.metadata.get("source_uri") or chunk_record.source_uri
+            chunk_record.code_language = (
+                chunk.code_language
+                or chunk.metadata.get("code_language")
+                or chunk_record.code_language
+            )
 
         db.commit()
+
+    @staticmethod
+    def _count_modality_stats(child_chunks: List[Chunk]) -> Dict[str, int]:
+        """统计各模态 child chunk 数量（text/table/code/image）。"""
+        stats: Dict[str, int] = {}
+        for chunk in child_chunks:
+            key = chunk.modality.value
+            stats[key] = stats.get(key, 0) + 1
+        return stats
 
     async def delete_document(self, doc_id: str, kb_id: int, db: Session) -> bool:
         """删除文档。"""

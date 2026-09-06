@@ -70,6 +70,10 @@ def _build_citations(
             "snippet": item.get("support_snippet") or item.get("snippet", "")[:200],
             "score": item.get("score"),
             "evidence_id": evidence_id,
+            # 多模态字段透传，供前端展示图片/表格证据
+            "modality": item.get("modality"),
+            "image_url": item.get("image_url"),
+            "caption": item.get("caption"),
         })
     return citations
 

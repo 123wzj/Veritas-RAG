@@ -124,6 +124,7 @@ def _sync_legacy_schema() -> None:
     _ensure_column("chunks", "sparse_vector", "`sparse_vector` JSON NULL")
     _ensure_column("chunks", "caption", "`caption` TEXT NULL")
     _ensure_column("chunks", "source_uri", "`source_uri` VARCHAR(500) NULL")
+    _ensure_column("chunks", "code_language", "`code_language` VARCHAR(50) NULL")
     _ensure_column("chunks", "token_count", "`token_count` INT NULL")
 
     _ensure_column("document_index_tasks", "status", "`status` VARCHAR(20) NOT NULL DEFAULT 'pending'")

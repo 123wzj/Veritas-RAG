@@ -416,6 +416,8 @@ async def upload_document(
             "status": result["status"],
             "parent_count": result["parent_count"],
             "child_count": result["child_count"],
+            "modality": result.get("modality"),
+            "modality_stats": result.get("modality_stats"),
         }
 
     except Exception as e:

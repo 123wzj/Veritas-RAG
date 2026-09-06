@@ -441,6 +441,11 @@ async def pack_evidence(state: RAGState) -> Dict[str, Any]:
                 "match_query": doc.get("match_query"),
                 "retrieval_type": doc.get("retrieval_type"),
                 "sub_question": current_plan.get("sub_question"),
+                # 多模态字段：图片块 source_uri 兼作 image_url 供前端展示
+                "modality": doc.get("parent_modality") or doc.get("modality"),
+                "caption": doc.get("parent_caption") or doc.get("caption"),
+                "image_url": doc.get("parent_source_uri") or doc.get("source_uri"),
+                "code_language": doc.get("parent_code_language") or doc.get("code_language"),
             }
             evidence_index += 1
             evidence.append(item)

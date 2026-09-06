@@ -4,7 +4,7 @@
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Union, Dict, Any
 from datetime import datetime
 from enum import Enum
 
@@ -22,6 +22,7 @@ class ModalityType(str, Enum):
     TEXT = "text"
     IMAGE = "image"
     TABLE = "table"
+    CODE = "code"
     MIXED = "mixed"
 
 
@@ -52,7 +53,8 @@ class KnowledgeBase(BaseModel):
     user_id: int
     name: str
     description: Optional[str] = None
-    acl_tags: Optional[List[str]] = None
+    # 评估导入把数据集元数据写入本列（dict），日常知识库为 List[str]；统一放宽类型避免 500
+    acl_tags: Optional[Union[List[str], Dict[str, Any]]] = None
     document_count: int = 0
     created_at: datetime
     updated_at: Optional[datetime] = None
