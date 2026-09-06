@@ -19,9 +19,11 @@ from backend.api.deps.common import get_current_user
 from backend.db.mysql.connection import get_db as get_db_func
 from backend.graph.graph import run_agentic_rag
 from backend.models.schemas.rag import RAGQueryRequest
-from backend.models.database.user import AnswerFeedbackTable, MessageTable, SessionTable
+from backend.models.database.user import AnswerFeedbackTable, MessageTable, SessionTable, RAGRunTable, RAGSpanTable
 from backend.api.deps.common import get_required_user
 from backend.services.chat.turn_service import turn_service
+from backend.services.trace_service import trace_service
+from backend.models.schemas.memory import FeedbackRequest, FeedbackResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,6 +68,8 @@ async def _generate_sse_from_graph(
         session = turn["session"]
         created = turn["created_session"]
         resolved_session_id = session.session_id
+        trace_service.start_run(db, request_id=request_id, user_id=user_id, session_id=resolved_session_id, kb_id=kb_id)
+        db.commit()
         if created:
             logger.info("自动创建会话成功: session_id=%s", resolved_session_id)
         db.close()
@@ -122,6 +126,12 @@ async def _generate_sse_from_graph(
                     memory_update_plan = state["memory_update_plan"]
 
                 if state.get("error"):
+                    error_db = next(get_db_func())
+                    try:
+                        trace_service.finish_run(error_db, request_id=request_id, final_status="failed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), reflection_count=int(final_state.get("reflection_count") or 0), error=str(state["error"]))
+                        error_db.commit()
+                    finally:
+                        error_db.close()
                     yield _format_sse(
                         {
                             "event": "run.failed",
@@ -136,6 +146,35 @@ async def _generate_sse_from_graph(
         if final_answer:
             db = next(get_db_func())
             try:
+                started_span_names = set()
+                span_map = {
+                    "memory.loaded": "memory.load", "query.rewritten": "query.rewrite", "query.decomposed": "query.decompose",
+                    "route.planned": "route.plan", "retrieval.dense": "retrieval.dense", "retrieval.sparse": "retrieval.sparse",
+                    "rrf.completed": "rrf", "rerank.completed": "rerank", "evidence.graded": "evidence.grade",
+                    "reflection.completed": "reflection", "answer.delta": "generation", "answer.completed": "verification",
+                    "memory.updated": "memory.update",
+                }
+                for graph_event in final_state.get("events", []):
+                    event_name = graph_event.get("event")
+                    span_name = span_map.get(event_name)
+                    if span_name and span_name not in started_span_names:
+                        trace_service.record_span(db, request_id=request_id, span_name=span_name, metadata={"event": event_name, "count": graph_event.get("data", {}).get("count") if isinstance(graph_event.get("data"), dict) else None})
+                        started_span_names.add(span_name)
+                # Persist deterministic node timings even when a node does not
+                # emit a public event. Event-derived spans are supplemented,
+                # never duplicated, by the graph state's measured timings.
+                for span_name, latency in (final_state.get("latency_breakdown_ms") or {}).items():
+                    normalized = str(span_name)
+                    if normalized not in started_span_names:
+                        trace_service.record_span(
+                            db,
+                            request_id=request_id,
+                            span_name=normalized,
+                            latency_ms=int(latency or 0),
+                            metadata={"source": "graph.latency_breakdown"},
+                        )
+                        started_span_names.add(normalized)
+                trace_service.finish_run(db, request_id=request_id, final_status="completed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), answer_mode=(final_state.get("evidence_grade") or {}).get("answer_mode") if isinstance(final_state.get("evidence_grade"), dict) else None, reflection_count=int(final_state.get("reflection_count") or 0), input_tokens=int((final_state.get("context_token_usage") or {}).get("used") or 0), output_tokens=int(final_state.get("output_tokens") or 0), selected_evidence_ids=[str(item.get("evidence_id")) for item in final_state.get("selected_evidence", []) if item.get("evidence_id")], selected_memory_ids=(final_state.get("memory_context") or {}).get("selected_memory_ids") or [])
                 persisted = turn_service.finalize_turn(
                     db=db,
                     user_id=user_id,
@@ -182,6 +221,20 @@ async def _generate_sse_from_graph(
             )
             return
 
+        error_db = next(get_db_func())
+        try:
+            trace_service.finish_run(
+                error_db,
+                request_id=request_id,
+                final_status="failed",
+                total_latency_ms=int((time.time() - start_time) * 1000),
+                route_type=final_state.get("route_type"),
+                reflection_count=int(final_state.get("reflection_count") or 0),
+                error="No answer generated",
+            )
+            error_db.commit()
+        finally:
+            error_db.close()
         yield _format_sse(
             {
                 "event": "run.failed",
@@ -195,6 +248,12 @@ async def _generate_sse_from_graph(
         raise
     except Exception as exc:
         logger.error("查询处理异常: %s", exc, exc_info=True)
+        try:
+            error_db = next(get_db_func())
+            trace_service.finish_run(error_db, request_id=request_id, final_status="failed", total_latency_ms=int((time.time() - start_time) * 1000), error=str(exc))
+            error_db.commit(); error_db.close()
+        except Exception:
+            logger.exception("Failed to persist trace failure")
         yield _format_sse(
             {
                 "event": "run.failed",
@@ -293,22 +352,28 @@ async def query_rag(
     raise HTTPException(status_code=500, detail=last_error or "查询失败")
 
 
-@router.post("/feedback")
+@router.post("/feedback", response_model=FeedbackResponse)
 async def submit_feedback(
-    data: dict,
+    data: FeedbackRequest,
     current_user=Depends(get_required_user),
     db: Session = Depends(get_db_func),
 ):
-    request_id = str(data.get("request_id") or "").strip()
-    rating = str(data.get("rating") or "").strip().lower()
-    if not request_id or rating not in {"positive", "negative"}:
-        raise HTTPException(status_code=400, detail="request_id and rating (positive|negative) are required")
+    request_id = data.request_id
+    rating = data.rating
+    run = db.query(RAGRunTable).filter(RAGRunTable.request_id == request_id, RAGRunTable.user_id == current_user.id).first()
     message = db.query(MessageTable).filter(MessageTable.request_id == request_id, MessageTable.role == "assistant").first()
-    if not message:
+    if not run and not message:
         raise HTTPException(status_code=404, detail="Answer run not found")
-    session = db.query(SessionTable).filter(SessionTable.session_id == message.session_id, SessionTable.user_id == current_user.id).first()
+    session_id = run.session_id if run else message.session_id
+    session = db.query(SessionTable).filter(SessionTable.session_id == session_id, SessionTable.user_id == current_user.id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    row = AnswerFeedbackTable(request_id=request_id, session_id=message.session_id, user_id=current_user.id, rating=rating, comment=str(data.get("comment") or "")[:2000])
-    db.add(row); db.commit()
-    return {"id": row.id, "request_id": request_id, "rating": rating}
+    row = db.query(AnswerFeedbackTable).filter(AnswerFeedbackTable.request_id == request_id, AnswerFeedbackTable.user_id == current_user.id).first()
+    if row:
+        row.rating = rating
+        row.comment = data.comment
+    else:
+        row = AnswerFeedbackTable(request_id=request_id, session_id=session_id, user_id=current_user.id, rating=rating, comment=data.comment)
+        db.add(row)
+    db.commit(); db.refresh(row)
+    return {"id": row.id, "request_id": request_id, "rating": row.rating, "comment": row.comment}
