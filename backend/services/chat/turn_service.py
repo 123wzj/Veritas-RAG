@@ -17,6 +17,14 @@ from backend.services.memory.memory_service import memory_service
 
 
 class TurnService:
+    @staticmethod
+    def title_from_query(query: str) -> str:
+        """Create a stable, readable session title without an extra LLM call."""
+        compact = " ".join((query or "").strip().split())
+        if not compact:
+            return "新对话"
+        return compact[:32].rstrip() + ("…" if len(compact) > 32 else "")
+
     def ensure_session(
         self,
         *,
@@ -70,6 +78,8 @@ class TurnService:
             session_id=session_id,
             kb_id=kb_id,
         )
+        if not created and int(session.message_count or 0) == 0 and (not session.title or session.title == "新对话"):
+            session.title = self.title_from_query(query)
         existing = (
             db.query(MessageTable)
             .filter(

@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Input } from "@/components/ui/input"
 import { ragService } from "@/services/rag"
 import { userService } from "@/services/user"
 import { traceService } from "@/services/trace"
@@ -78,6 +79,11 @@ function formatSessionTime(value: string) {
   })
 }
 
+function titleFromQuestion(value: string) {
+  const compact = value.trim().replace(/\s+/g, " ")
+  return compact.length > 32 ? `${compact.slice(0, 32).trim()}…` : compact || "新对话"
+}
+
 export function ChatPage() {
   const store = useChatStore()
   const { currentSession, sessions, isStreaming } = useChatStore()
@@ -91,6 +97,8 @@ export function ChatPage() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [isDraftMode, setIsDraftMode] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState("")
 
   const currentKnowledgeBase = useMemo(
     () => knowledgeBases.find((item) => item.id === currentKbId),
@@ -167,6 +175,7 @@ export function ChatPage() {
     const session = sessions.find((item) => item.session_id === sessionId)
     if (!session) return
     setIsDraftMode(false)
+    setEditingTitle(false)
     store.setCurrentSession(session)
     if (session.messages.length > 0) return
     try {
@@ -199,16 +208,20 @@ export function ChatPage() {
   const handleRenameSession = async (sessionId: string, event: MouseEvent) => {
     event.stopPropagation()
     const session = sessions.find((item) => item.session_id === sessionId)
-    const currentTitle = session?.title || "新对话"
-    const title = window.prompt("请输入新的会话名称", currentTitle)?.trim()
-    if (!title || title === currentTitle) return
+    if (!session) return
+    if (currentSession?.session_id !== sessionId) store.setCurrentSession(session)
+    setTitleDraft(session.title || "新对话")
+    setEditingTitle(true)
+  }
+
+  const saveTitle = async () => {
+    if (!currentSession || !titleDraft.trim()) return
     try {
-      const updated = await userService.renameSession(sessionId, title)
-      store.upsertSession(toChatSession(updated, session?.messages || []))
-      await loadSessions()
+      const updated = await userService.renameSession(currentSession.session_id, titleDraft.trim())
+      store.upsertSession(toChatSession(updated, currentSession.messages))
+      setEditingTitle(false)
     } catch (error) {
       console.error("Failed to rename session:", error)
-      window.alert("重命名失败，请稍后重试。")
     }
   }
 
@@ -253,6 +266,18 @@ export function ChatPage() {
       if (!workingSession) {
         window.alert("创建会话失败，请稍后重试。")
         return
+      }
+    }
+
+    if (workingSession.message_count === 0 || workingSession.title === "新对话") {
+      const generatedTitle = titleFromQuestion(content)
+      try {
+        const updated = await userService.renameSession(workingSession.session_id, generatedTitle)
+        workingSession = toChatSession(updated, workingSession.messages)
+        store.upsertSession(workingSession)
+        store.setCurrentSession(workingSession)
+      } catch (error) {
+        console.error("Failed to generate session title:", error)
       }
     }
 
@@ -324,9 +349,9 @@ export function ChatPage() {
     : sessions
 
   return (
-    <div className="flex h-[calc(100vh-57px)] min-h-0 bg-white lg:h-screen">
+    <div className="relative flex h-[calc(100vh-57px)] min-h-0 bg-white lg:h-[calc(100vh-56px)]">
       {sidebarOpen && (
-        <aside className="hidden w-[300px] shrink-0 border-r border-border bg-white xl:flex xl:flex-col">
+        <aside className="absolute inset-y-0 left-0 z-20 flex w-[300px] shrink-0 flex-col border-r border-border bg-white shadow-xl lg:static lg:shadow-none">
           <div className="flex h-14 items-center gap-2 border-b border-border px-3">
             <Button onClick={handleNewSession} className="flex-1 justify-start rounded-xl" variant="ghost">
               <MessageSquarePlus className="mr-2 h-4 w-4" />
@@ -337,7 +362,7 @@ export function ChatPage() {
               size="icon"
               className="h-9 w-9 rounded-xl"
               onClick={() => setSidebarOpen(false)}
-              aria-label="收起会话栏"
+              aria-label="隐藏会话栏"
             >
               <PanelLeftClose className="h-4 w-4" />
             </Button>
@@ -440,7 +465,7 @@ export function ChatPage() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="hidden h-9 w-9 rounded-xl xl:inline-flex"
+                className="inline-flex h-9 w-9 rounded-xl"
                 onClick={() => setSidebarOpen(true)}
                 aria-label="展开会话栏"
               >
@@ -448,7 +473,16 @@ export function ChatPage() {
               </Button>
             )}
             <div className="min-w-0 flex-1">
-              <h1 className="truncate text-sm font-medium">{currentSession?.title || "新对话"}</h1>
+              {editingTitle && currentSession ? (
+                <div className="flex max-w-lg items-center gap-2">
+                  <Input autoFocus value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false) }} className="h-8 text-sm" aria-label="会话标题" />
+                  <Button size="sm" onClick={() => void saveTitle()}>保存</Button>
+                </div>
+              ) : (
+                <button type="button" className="max-w-full truncate text-left text-sm font-medium hover:text-primary" onClick={() => { if (currentSession) { setTitleDraft(currentSession.title || "新对话"); setEditingTitle(true) } }} title="点击修改会话标题">
+                  {currentSession?.title || "新对话"}
+                </button>
+              )}
               <p className="mt-0.5 truncate text-xs text-muted-foreground">
                 {mode.label} · {currentKnowledgeBase?.name || "未选择知识库"}
               </p>
