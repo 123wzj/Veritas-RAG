@@ -435,8 +435,8 @@ def get_ragas_llm() -> Any:
     deepseek_api_key = getattr(settings, "DEEPSEEK_API_KEY", "") or ""
     deepseek_base_url = getattr(settings, "DEEPSEEK_BASE_URL", None)
     deepseek_model = (
-        getattr(settings, "DEEPSEEK_PRO_MODEL", "deepseek-v4-pro")
-        or "deepseek-v4-pro"
+        getattr(settings, "DEEPSEEK_PRO_MODEL", "deepseek-v4-flash")
+        or "deepseek-v4-flash"
     )
     llm = ChatDeepSeek(
         model=settings.RAGAS_LLM_MODEL or deepseek_model,
