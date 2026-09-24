@@ -16,6 +16,10 @@ Veritas RAG 文档
 │   └── 多模态解析与检索增强PRD.md          # Markdown 多模态及后续扩展规划
 │
 ├── 20 架构与实现
+│   ├── react-agent/                         # V1.6 ReAct 重构需求与迁移基线
+│   │   ├── README.md                        # 总体架构、循环、工具、记忆与上下文
+│   │   ├── ReAct运行时与工具协议.md          # 可映射代码的 Tool/Observation 契约
+│   │   └── 迁移计划与验收标准.md             # 分阶段实施、评测、灰度和完成定义
 │   ├── Agentic RAG 实现说明.md              # 全链路实现主文档
 │   ├── 检索融合与端到端流程.md              # 检索链路专题
 │   ├── 会话记忆与上下文工程实现说明.md      # 当前实现契约、差距和落地顺序
@@ -50,6 +54,7 @@ Veritas RAG 文档
 
 | 模块 | 首选文档 | 代码入口 | 评测/验证 |
 |---|---|---|---|
+| ReAct Runtime/Tool Gateway | [V1.6 ReAct 架构](react-agent/README.md)、[运行时与工具协议](react-agent/ReAct运行时与工具协议.md) | 目标：`backend/agent/`；当前：`backend/graph/` | [迁移与验收](react-agent/迁移计划与验收标准.md) |
 | Markdown 解析与分块 | [实现说明](<Agentic RAG 实现说明.md>)、[多模态 PRD](<多模态解析与检索增强PRD.md>) | `backend/services/ingestion/parser.py`、`chunker.py` | `tests/test_markdown_multimodal.py` |
 | 向量化与入库 | [实现说明](<Agentic RAG 实现说明.md>) | `backend/services/ingestion/ingestion.py`、`backend/embeddings/` | 入库测试、Chroma/MySQL 检查 |
 | Dense/BM25/RRF | [检索融合流程](<检索融合与端到端流程.md>) | `backend/services/retrieval/hybrid.py` | T2Retrieval 评测 |

@@ -2,6 +2,8 @@
 
 上级导航：[`docs/README.md`](README.md) · 当前文档：长期工程目标与演进路线
 
+V1.6 ReAct 具体变更需求、工具协议和迁移标准见 [`docs/react-agent/README.md`](react-agent/README.md)。本文件继续作为长期能力蓝图。
+
 > 版本：V1.0  
 > 日期：2026-09-06  
 > 适用项目：Veritas RAG 个人知识库助手  

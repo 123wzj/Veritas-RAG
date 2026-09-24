@@ -2,6 +2,8 @@
 
 上级导航：[`docs/README.md`](README.md) · 当前模块：架构与实现
 
+> 状态说明（2026-09-24）：本文描述当前仍在运行的固定 LangGraph 工作流。目标 ReAct 重构需求见 [`docs/react-agent/README.md`](react-agent/README.md)，不得把目标方案误写为已经实现。
+
 ## 1. 文档目的
 
 这份文档用于说明当前项目 `backend/` 目录下 Agentic RAG 的最新实现方式。  
