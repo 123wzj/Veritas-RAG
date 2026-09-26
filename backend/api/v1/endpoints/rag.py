@@ -133,11 +133,14 @@ async def _generate_sse_from_graph(
                 if state.get("memory_update_plan"):
                     memory_update_plan = state["memory_update_plan"]
 
-                if state.get("error"):
-                    resumable = bool(state.get("resumable"))
+                runtime_error = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
+                error_value = state.get("error") or runtime_error.get("error")
+                if error_value:
+                    resumable = bool(state.get("resumable") or runtime_error.get("resumable"))
+                    stop_reason = state.get("stop_reason") or runtime_error.get("stop_reason")
                     error_db = next(get_db_func())
                     try:
-                        trace_service.finish_run(error_db, request_id=request_id, final_status="interrupted" if resumable else "failed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), reflection_count=int(final_state.get("reflection_count") or 0), stop_reason=state.get("stop_reason"), error=str(state["error"]))
+                        trace_service.finish_run(error_db, request_id=request_id, final_status="interrupted" if resumable else "failed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), reflection_count=int(final_state.get("reflection_count") or 0), stop_reason=stop_reason, error=str(error_value))
                         error_db.commit()
                     finally:
                         error_db.close()
@@ -145,11 +148,11 @@ async def _generate_sse_from_graph(
                         {
                             "event": "run.failed",
                             "data": {
-                                "error": state["error"],
+                                "error": error_value,
                                 "session_id": resolved_session_id,
                                 "request_id": request_id,
                                 "resumable": resumable,
-                                "stop_reason": state.get("stop_reason"),
+                                "stop_reason": stop_reason,
                             },
                         }
                     )
