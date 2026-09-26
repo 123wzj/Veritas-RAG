@@ -1,6 +1,6 @@
 # Veritas RAG 后端
 
-后端基于 FastAPI、LangGraph、MySQL 和 Chroma。当前同时保留旧固定 Graph 与新受控 ReAct Runtime，运行模式由 `AGENT_RUNTIME_MODE` 控制。
+后端基于 FastAPI、LangGraph、MySQL 和 Chroma。在线问答统一运行在新受控 ReAct Runtime；`AGENT_RUNTIME_MODE` 保留为兼容配置，但旧值会被归一化为 `react`。
 
 ## 主要目录
 
@@ -12,7 +12,7 @@ backend/
 │   ├── memory/            # ReAct 三层记忆桥接
 │   └── tools/             # Registry / Policy / Gateway / Tool Adapter
 ├── api/v1/endpoints/      # FastAPI 路由
-├── graph/                 # Legacy 与 Shadow 对照基线
+├── graph/                 # 历史图，仅供旧评测迁移参考
 ├── services/
 │   ├── ingestion/         # Markdown 入库与父子分块
 │   ├── retrieval/         # Dense、BM25、RRF、Rerank
@@ -37,11 +37,7 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## Runtime
 
-| 模式 | 行为 |
-| --- | --- |
-| `legacy` | 旧固定 Graph 返回答案，当前默认 |
-| `react_shadow` | Legacy 返回答案，ReAct 只读执行并记录对比指标 |
-| `react` | 新 ReAct Graph 直接返回答案 |
+在线 Runtime 只有 `react`。即使旧环境残留 `legacy`、`react_shadow` 或非法值，API 也不会导入或执行旧图。
 
 新图：
 
@@ -68,6 +64,7 @@ hydrate_context → decide → act → observe → decide → verify → memory
 ```text
 backend/db/mysql/migrations/20260906_v15_acceptance.sql
 backend/db/mysql/migrations/20260926_react_runtime.sql
+backend/db/mysql/migrations/20260926_react_default.sql
 ```
 
 生产环境不能只依赖 `create_all` 或开发期 Schema 同步逻辑。
@@ -82,9 +79,8 @@ conda run -n cook-rag-1 pytest -q
 
 - 上传 API 仅支持 Markdown；
 - Sparse 为独立 BM25，不是 BGE-M3 learned sparse；
-- `backend/graph/` 仍是回退基线，切流完成前不能删除；
-- 默认 Runtime 仍为 `legacy`；
-- 目标数据库迁移、真实 Shadow 和生产认证尚未完成；
+- `backend/graph/` 已脱离在线 Runtime，仍有历史评测脚本引用，迁移后再删除；
+- 目标数据库迁移和生产认证尚未完成；
 - Checkpoint 和失败节点恢复尚未实现。
 
 完整说明见 [项目文档中心](../docs/README.md)。

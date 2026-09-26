@@ -232,7 +232,13 @@ class RAGRunTable(Base):
     output_tokens = Column(Integer, nullable=False, default=0)
     selected_evidence_ids = Column(JSON, nullable=True)
     selected_memory_ids = Column(JSON, nullable=True)
-    runtime_mode = Column(String(30), nullable=False, default="legacy", index=True)
+    runtime_mode = Column(
+        String(30),
+        nullable=False,
+        default="react",
+        server_default="react",
+        index=True,
+    )
     iteration_count = Column(Integer, nullable=False, default=0)
     stop_reason = Column(String(60), nullable=True)
     tool_call_count = Column(Integer, nullable=False, default=0)

@@ -107,6 +107,11 @@ def test_compiled_graph_runs_decide_act_observe_decide_cycle(monkeypatch):
     )
     monkeypatch.setattr(graph_module.agent_controller, "decide", fake_decide)
     monkeypatch.setattr(graph_module.tool_gateway, "execute", fake_execute)
+    monkeypatch.setattr(
+        graph_module.memory_service,
+        "build_memory_update_plan",
+        AsyncMock(return_value={"long_term_actions": []}),
+    )
 
     state = create_agent_state(
         query="question",
@@ -116,7 +121,7 @@ def test_compiled_graph_runs_decide_act_observe_decide_cycle(monkeypatch):
         kb_id=7,
         web_enabled=False,
         top_k=6,
-        runtime_mode="react_shadow",
+        runtime_mode="react",
         budgets={"max_iterations": 3, "max_tool_calls": 3, "max_kb_calls": 2},
     )
     final = asyncio.run(react_graph.ainvoke(state))

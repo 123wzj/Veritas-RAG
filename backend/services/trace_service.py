@@ -7,7 +7,7 @@ from backend.models.database.user import RAGRunTable, RAGSpanTable
 
 
 class TraceService:
-    def start_run(self, db: Session, *, request_id: str, user_id: int, session_id: str, kb_id: Optional[int], runtime_mode: str = "legacy", budget_profile: Optional[str] = None) -> RAGRunTable:
+    def start_run(self, db: Session, *, request_id: str, user_id: int, session_id: str, kb_id: Optional[int], runtime_mode: str = "react", budget_profile: Optional[str] = None) -> RAGRunTable:
         run = db.query(RAGRunTable).filter(RAGRunTable.request_id == request_id).first()
         if run:
             return run

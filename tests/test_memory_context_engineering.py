@@ -21,7 +21,7 @@ for path in (PROJECT_ROOT,):
 
 from backend.core.config import settings
 from backend.db.mysql.connection import Base
-from backend.graph.llm_factory import get_llm
+from backend.services.llm_factory import get_llm
 from backend.models.database.user import (
     ConversationBranchTable,
     LongTermMemoryTable,

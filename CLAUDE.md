@@ -36,12 +36,12 @@ pytest -q
 后端按 API、Runtime、工具/证据、业务服务和存储分层组织：
 
 - **API 层** `api/v1/endpoints/`：问答/SSE、知识库、用户/会话、记忆与 Trace。
-- **Runtime 分发** `agent/runtime.py`：支持 `legacy`、`react_shadow`、`react`，当前安全默认仍为 `legacy`。
+- **Runtime 入口** `agent/runtime.py`：在线请求只执行 `react`，旧配置值也会被归一化为 `react`。
 - **新 ReAct 图** `agent/graph.py`：状态见 `agent/state.py`，稳定契约见 `agent/schemas.py`。
 - **工具系统** `agent/tools/`：Registry、Policy、Gateway、`knowledge_search`、`web_search`。
 - **证据与上下文** `agent/evidence/`、`agent/context/`：Evidence Ledger、引用校验和动态 Prompt。
 - **记忆** `agent/memory/`、`services/memory/`：工作、短期、长期三层记忆。
-- **Legacy 基线** `graph/`：仅作为默认回退和 Shadow 对照；完成灰度前不能删除。
+- **历史图** `graph/`：不再进入在线请求，仅供尚未迁移的评测脚本参考。
 - **存储** `db/`：Chroma 保存 Dense 向量，MySQL 保存业务数据、记忆、Trace 和工具审计，Redis 可选。
 - **配置** `core/config.py`：`Settings` 只从根目录 `.env` 读取，不读 `backend/.env`。
 
@@ -56,7 +56,7 @@ hydrate_context
       → propose_memory_update → END
 ```
 
-`react_shadow` 仍由 Legacy 返回答案，新 ReAct 只读执行并生成对比指标；`react` 才由新图直接返回答案。工具调用必须经过服务端权限、预算、超时、重试与幂等校验。当前 Trace 保存 Run、Span、Tool Call 和 Observation，但没有节点级 Checkpoint/Resume。
+所有在线请求都由新 ReAct 图直接返回答案。工具调用必须经过服务端权限、预算、超时、重试与幂等校验。当前 Trace 保存 Run、Span、Tool Call 和 Observation，但没有节点级 Checkpoint/Resume。
 
 ### 数据存储职责划分
 
@@ -86,7 +86,7 @@ MySQL 是会话与记忆的事实来源。记忆分为 Run-scoped 工作记忆�
 - `docs/03-状态、追踪与失败恢复.md` — State、Trace 和 Checkpoint 差距
 - `docs/04-工具系统与检索.md` — Tool Gateway、入库与检索
 - `docs/05-上下文工程与记忆机制.md` — 三层记忆与动态 Prompt
-- `docs/06-数据库迁移与灰度切流.md` — 迁移、Shadow 与验收
+- `docs/06-数据库迁移与ReAct上线验收.md` — ReAct 默认值迁移、上线验收与旧图清理
 
 ## 注意事项
 

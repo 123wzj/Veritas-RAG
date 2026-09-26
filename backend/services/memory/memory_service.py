@@ -27,7 +27,7 @@ from backend.models.database.user import (
 from backend.services.context.context_assembler import context_assembler
 
 try:
-    from backend.graph.llm_factory import get_llm
+    from backend.services.llm_factory import get_llm
 except Exception:  # pragma: no cover - minimal environments may omit LLM deps
     get_llm = None
 

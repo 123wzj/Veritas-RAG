@@ -10,21 +10,21 @@ def test_agent_decision_requires_calls_for_tool_action():
         AgentDecision(type="tool_calls")
 
 
-def test_agent_state_keeps_server_identity_and_separate_run_id():
+def test_agent_state_keeps_server_identity_and_run_id():
     state = create_agent_state(
         query="hello",
         user_id=7,
         request_id="request-1",
-        run_id="request-1:shadow",
+        run_id="request-1",
         session_id="session-7",
         kb_id=9,
         web_enabled=False,
         top_k=6,
-        runtime_mode="react_shadow",
+        runtime_mode="react",
     )
     assert state["user_id"] == 7
     assert state["session_id"] == "session-7"
-    assert state["run_id"] == "request-1:shadow"
+    assert state["run_id"] == "request-1"
 
 
 def test_tool_call_contract_is_typed():

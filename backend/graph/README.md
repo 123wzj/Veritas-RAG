@@ -2,6 +2,6 @@
 
 `backend/graph/` is the rollback and Shadow comparison baseline for the V1.6 migration.
 
-Production API traffic enters `backend.agent.runtime.run_rag_runtime`; it must not import this package directly. Keep this directory while `AGENT_RUNTIME_MODE=legacy` or `react_shadow` is in use. After the ReAct runtime passes offline, Shadow, staged traffic, permission, citation, latency and cost gates, remove the legacy nodes in a dedicated cleanup change.
+Production API traffic enters `backend.agent.runtime.run_rag_runtime` and always executes `backend.agent.graph.react_graph`; the online runtime no longer imports this package. This directory is retained only for historical evaluation and migration comparison. New API features and fixes must not depend on it, and it may be removed after the remaining evaluation scripts are migrated.
 
 Do not add new product behavior here. New orchestration belongs in `backend/agent/`; reusable retrieval, memory and generation primitives belong in `backend/services/`.

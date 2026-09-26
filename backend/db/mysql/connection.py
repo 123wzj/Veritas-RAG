@@ -91,7 +91,7 @@ def _sync_legacy_schema() -> None:
     _ensure_column("long_term_memories", "embedding_ref", "`embedding_ref` VARCHAR(255) NULL")
     _ensure_column("answer_feedback", "updated_at", "`updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
 
-    _ensure_column("rag_runs", "runtime_mode", "`runtime_mode` VARCHAR(30) NOT NULL DEFAULT 'legacy'")
+    _ensure_column("rag_runs", "runtime_mode", "`runtime_mode` VARCHAR(30) NOT NULL DEFAULT 'react'")
     _ensure_column("rag_runs", "iteration_count", "`iteration_count` INT NOT NULL DEFAULT 0")
     _ensure_column("rag_runs", "stop_reason", "`stop_reason` VARCHAR(60) NULL")
     _ensure_column("rag_runs", "tool_call_count", "`tool_call_count` INT NOT NULL DEFAULT 0")

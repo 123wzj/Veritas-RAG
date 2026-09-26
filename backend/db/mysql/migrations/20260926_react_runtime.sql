@@ -1,7 +1,7 @@
 -- Controlled ReAct runtime, durable tool idempotency and memory validity.
--- Apply with MySQL 8.0+ before enabling AGENT_RUNTIME_MODE=react.
+-- Apply with MySQL 8.0+. The online runtime is ReAct-only.
 
-ALTER TABLE `rag_runs` ADD COLUMN IF NOT EXISTS `runtime_mode` VARCHAR(30) NOT NULL DEFAULT 'legacy';
+ALTER TABLE `rag_runs` ADD COLUMN IF NOT EXISTS `runtime_mode` VARCHAR(30) NOT NULL DEFAULT 'react';
 ALTER TABLE `rag_runs` ADD COLUMN IF NOT EXISTS `iteration_count` INT NOT NULL DEFAULT 0;
 ALTER TABLE `rag_runs` ADD COLUMN IF NOT EXISTS `stop_reason` VARCHAR(60) NULL;
 ALTER TABLE `rag_runs` ADD COLUMN IF NOT EXISTS `tool_call_count` INT NOT NULL DEFAULT 0;

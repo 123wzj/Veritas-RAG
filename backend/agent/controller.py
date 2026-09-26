@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from backend.agent.context.builder import react_context_builder
 from backend.agent.schemas import AgentDecision, RuntimeBudget, ToolCallRequest
 from backend.agent.tools.registry import ToolRegistry, tool_registry
-from backend.graph.llm_factory import get_llm
+from backend.services.llm_factory import get_llm
 
 
 CONTROL_TOOLS = [

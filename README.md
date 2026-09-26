@@ -1,15 +1,13 @@
 # Veritas RAG
 
-Veritas RAG 是一个面向个人与私有知识库的问答和记忆系统。当前项目已经实现受控 ReAct Runtime、知识库与联网工具、Evidence Ledger、三层记忆、动态上下文和运行追踪，并保留旧固定 Graph 作为回退与 Shadow 对照基线。
+Veritas RAG 是一个面向个人与私有知识库的问答和记忆系统。当前在线 RAG 已统一使用受控 ReAct Runtime，并实现知识库与联网工具、Evidence Ledger、三层记忆、动态上下文和运行追踪。旧固定 Graph 不再参与 API 请求，仅暂存于仓库供历史评测迁移参考。
 
 ## 当前架构
 
 ```text
 FastAPI / SSE
-  → Runtime Dispatcher
-      ├─ legacy：旧固定图，当前默认
-      ├─ react_shadow：Legacy 返回答案，ReAct 只读对照
-      └─ react：hydrate → decide → act → observe → decide → verify
+  → ReAct Runtime
+      → hydrate → decide → act → observe → decide → verify
   → Tool Gateway
       ├─ knowledge_search
       └─ web_search
@@ -19,9 +17,9 @@ FastAPI / SSE
 
 关键边界：
 
-- 新 ReAct 代码已经实现，但默认仍为 `legacy`，尚需目标数据库迁移、真实 Shadow 评测和灰度切流。
+- 所有在线问答均进入 `backend.agent.graph.react_graph`；旧配置值也会被归一化为 `react`。
 - 当前 Trace 保存 Run、Span、Tool Call 和 Observation；尚未保存每个节点后的完整 State，因此不能从失败节点续跑。
-- 旧 `backend/graph/` 仍用于回退与对照，现阶段不能删除。
+- 旧 `backend/graph/` 不再被在线 Runtime 导入，待历史评测脚本迁移后可删除。
 - 上传 API 当前只接受 Markdown（`.md`）；其他格式属于后续规划。
 - 后端模型角色统一使用 `deepseek-v4-flash`。
 
@@ -93,14 +91,14 @@ npm run build
 - [状态、追踪与失败恢复](docs/03-状态、追踪与失败恢复.md)
 - [工具系统与检索](docs/04-工具系统与检索.md)
 - [上下文工程与记忆机制](docs/05-上下文工程与记忆机制.md)
-- [数据库迁移与灰度切流](docs/06-数据库迁移与灰度切流.md)
+- [数据库迁移与 ReAct 上线验收](docs/06-数据库迁移与ReAct上线验收.md)
 
 ## 当前优先级
 
-1. 在目标 MySQL 正式执行迁移并验证；
-2. 使用真实流量完成 `react_shadow` 质量、延迟与成本评测；
+1. 在目标 MySQL 执行 ReAct Runtime 与默认值迁移并验证；
+2. 为新 ReAct 主链建立持续质量、延迟和成本评测；
 3. 完善生产认证、权限、限流和日志脱敏；
-4. 灰度将流量从 `legacy` 切到 `react`；
+4. 将历史评测脚本迁移到 `run_rag_runtime`，随后删除旧 Graph；
 5. 实现节点 Checkpoint 与 Resume，再扩展有副作用工具、MCP 和多 Agent。
 
 许可证：MIT。

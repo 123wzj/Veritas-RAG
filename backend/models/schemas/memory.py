@@ -86,7 +86,7 @@ class TraceRunResponse(BaseModel):
     output_tokens: int
     selected_evidence_ids: list[str] = []
     selected_memory_ids: list[str] = []
-    runtime_mode: str = "legacy"
+    runtime_mode: str = "react"
     iteration_count: int = 0
     stop_reason: Optional[str] = None
     tool_call_count: int = 0

@@ -119,9 +119,8 @@ class Settings(BaseSettings):
     GRAPH_RECURSION_LIMIT: int = 50
     ENABLE_REFLECTION: bool = True
 
-    # Controlled ReAct runtime. ``legacy`` remains the safe default until the
-    # shadow acceptance gates have been met in the target environment.
-    AGENT_RUNTIME_MODE: str = "legacy"
+    # The online RAG API always uses the controlled ReAct runtime.
+    AGENT_RUNTIME_MODE: str = "react"
     AGENT_REACT_MAX_ITERATIONS: int = 6
     AGENT_MAX_TOOL_CALLS: int = 6
     AGENT_MAX_KB_CALLS: int = 3
@@ -130,8 +129,6 @@ class Settings(BaseSettings):
     AGENT_CONTEXT_INPUT_TOKEN_LIMIT: int = 32000
     AGENT_OUTPUT_TOKEN_RESERVE: int = 8192
     AGENT_RUN_DEADLINE_MS: int = 120000
-    AGENT_SHADOW_TIMEOUT_MS: int = 120000
-    AGENT_SHADOW_SAMPLE_RATE: float = 1.0
 
     # Context engineering and memory budgets.
     CONTEXT_INPUT_TOKEN_BUDGET: int = 7000

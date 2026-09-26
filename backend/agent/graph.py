@@ -294,7 +294,7 @@ async def verify_answer(state: AgentState) -> Dict[str, Any]:
 
 
 async def propose_memory_update(state: AgentState) -> Dict[str, Any]:
-    if state.get("runtime_mode") == "react_shadow" or not state.get("final_answer"):
+    if not state.get("final_answer"):
         return {}
     db = next(get_db())
     started = time.perf_counter()
@@ -340,7 +340,7 @@ def route_after_verify(state: AgentState) -> Literal["decide", "memory", "end"]:
         return "end"
     if not state.get("final_answer"):
         return "decide"
-    return "memory" if state.get("runtime_mode") != "react_shadow" else "end"
+    return "memory"
 
 
 def create_react_graph():
