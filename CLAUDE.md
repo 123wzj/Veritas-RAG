@@ -33,26 +33,30 @@ pytest -q
 
 ## 架构总览
 
-后端按 分层 + 图编排 组织（`backend/`）：
+后端按 API、Runtime、工具/证据、业务服务和存储分层组织：
 
-- **API 层** `api/v1/endpoints/`：`rag.py`（问答/SSE）、`knowledge.py`（知识库/上传）、`users.py`（用户/会话）、`memory.py`（记忆）
-- **图编排** `graph/`：`graph.py` 定义 LangGraph 状态机，`state/state.py` 定义 `RAGState`（TypedDict，节点间传递所有中间结果）
-- **节点** `graph/nodes/`：`query_nodes`（改写/拆解/路由）、`retrieval_nodes`（检索/证据）、`reflection_nodes`（反思）、`generation_nodes`（生成/验证）、`memory_nodes`（记忆）、`web_nodes`（联网搜索）
-- **服务层** `services/`：`ingestion/`（解析/切分/入库）、`retrieval/`（hybrid 融合/精排/多样性）、`memory/`（记忆服务）、`context/`（上下文拼装）、`web_search/`、`chat/`、`acl/`、`vision/`
-- **存储** `db/`：`chroma/`（向量）、`mysql/`（结构化）、`redis/`（可选）
-- **配置** `core/config.py`：`Settings`（pydantic-settings），只从根目录 `.env` 读取，**不读** `backend/.env`
+- **API 层** `api/v1/endpoints/`：问答/SSE、知识库、用户/会话、记忆与 Trace。
+- **Runtime 分发** `agent/runtime.py`：支持 `legacy`、`react_shadow`、`react`，当前安全默认仍为 `legacy`。
+- **新 ReAct 图** `agent/graph.py`：状态见 `agent/state.py`，稳定契约见 `agent/schemas.py`。
+- **工具系统** `agent/tools/`：Registry、Policy、Gateway、`knowledge_search`、`web_search`。
+- **证据与上下文** `agent/evidence/`、`agent/context/`：Evidence Ledger、引用校验和动态 Prompt。
+- **记忆** `agent/memory/`、`services/memory/`：工作、短期、长期三层记忆。
+- **Legacy 基线** `graph/`：仅作为默认回退和 Shadow 对照；完成灰度前不能删除。
+- **存储** `db/`：Chroma 保存 Dense 向量，MySQL 保存业务数据、记忆、Trace 和工具审计，Redis 可选。
+- **配置** `core/config.py`：`Settings` 只从根目录 `.env` 读取，不读 `backend/.env`。
 
-### LangGraph 主流程（`graph/graph.py`）
+### Runtime 主流程
 
+```text
+hydrate_context
+  → decide
+    → act → observe → decide
+    → verify
+      → decide（仍有预算且验证失败）
+      → propose_memory_update → END
 ```
-load_memory → rewrite_query → decompose_query → plan_query_route
-  → (retrieve → rerank → pack_evidence → judge_evidence)
-  → reflect / web_search（不足或失败时的循环）
-  → load_generation_memory → generate_answer → verify_answer
-  → write_memory → END
-```
 
-条件路由：`plan_query_route` 按意图决定走 `retrieve`/`web_search`/`generate`；`judge_evidence` 证据不足时进 `reflect`；`verify_answer` 校验失败时回 `reflect`。反思由 `MAX_REFLECTION_ROUNDS`（默认 3）和 `GRAPH_RECURSION_LIMIT` 限制防死循环。
+`react_shadow` 仍由 Legacy 返回答案，新 ReAct 只读执行并生成对比指标；`react` 才由新图直接返回答案。工具调用必须经过服务端权限、预算、超时、重试与幂等校验。当前 Trace 保存 Run、Span、Tool Call 和 Observation，但没有节点级 Checkpoint/Resume。
 
 ### 数据存储职责划分
 
@@ -62,26 +66,27 @@ load_memory → rewrite_query → decompose_query → plan_query_route
 
 ### 检索链路
 
-混合检索：Dense（BGE-M3，Chroma）+ Sparse（BM25，MySQL）并行召回 → Weighted RRF 融合 → 文档/父块多样性控制 → Parent 回补 → `BAAI/bge-reranker-v2-m3` 精排 → 证据打包。证据按 `direct_support`/`partial_support`/`background_only`/`no_support`/`conflict` 分级，只有 direct_support 能用于确定结论和引用。
+`knowledge_search` 复用 Dense（BGE-M3，Chroma）+ Sparse（BM25，MySQL）并行召回 → Weighted RRF → 文档/父块多样性控制 → Parent 回补 → `BAAI/bge-reranker-v2-m3` 精排。工具结果转为 `ToolObservation` 并进入 Evidence Ledger，最终答案只能引用其中实际存在的 `E#`。
 
 ### 上下文工程与记忆
 
-MySQL 是会话与记忆的事实来源。记忆分层：最近对话（2-3 轮）、会话摘要、工作记忆（当前请求）、长期记忆（跨会话）。长期记忆不全量注入，先按作用域筛选 → 词法预排序 → DeepSeek 选择 top-k。Prompt 拼装按优先级：当前问题 → 证据 → 工作记忆 → 会话摘要 → 最近对话 → 长期记忆 → 用户信息，各区域有独立 token 预算。记忆更新只在答案通过验证后、于事务中写入。
+MySQL 是会话与记忆的事实来源。记忆分为 Run-scoped 工作记忆、Session/Branch-scoped 短期记忆和 User/Project-scoped 长期记忆。每轮 `decide` 都按 System、策略、当前问题、工具、工作记忆、Observation、Evidence、会话摘要、最近消息、长期记忆和画像重新构造上下文；只有答案通过验证后才规划记忆更新。
 
-### 模型分工
+### 模型配置
 
-- 生成/反思/持久记忆：`deepseek-v4-pro`
-- 结构化判断/验证等高频率任务：`deepseek-v4-flash`
+- 所有 LLM 角色统一使用 `deepseek-v4-flash`，优先控制成本。
 - Embedding：`BAAI/bge-m3`（本地）；Reranker：`BAAI/bge-reranker-v2-m3`（本地）
 - 联网搜索：Tavily / SerpApi / DuckDuckGo（DuckDuckGo 为占位实现）
 
 ## 关键文档
 
-`docs/` 目录是架构与链路的权威说明，`backend-code-nav` skill（`.claude/skills/backend-code-nav/SKILL.md`）据此把问题路由到具体文件。核心文档：
-- `docs/Agentic RAG 实现说明.md` — 当前生效的新架构
-- `docs/检索融合与端到端流程.md` — 检索参数与完整链路
-- `docs/会话记忆与上下文工程实现说明.md` — 记忆与 Prompt 拼装
-- `docs/RAG检索与生成评估完整流程.md`、`docs/RAGAS答案生成评估使用说明.md` — 评估流程
+`docs/` 目录是架构与链路的权威说明。核心文档：
+- `docs/01-项目现状与阅读指南.md` — 当前能力、边界和源码入口
+- `docs/02-系统架构与运行流程.md` — ReAct Runtime 与会话隔离
+- `docs/03-状态、追踪与失败恢复.md` — State、Trace 和 Checkpoint 差距
+- `docs/04-工具系统与检索.md` — Tool Gateway、入库与检索
+- `docs/05-上下文工程与记忆机制.md` — 三层记忆与动态 Prompt
+- `docs/06-数据库迁移与灰度切流.md` — 迁移、Shadow 与验收
 
 ## 注意事项
 

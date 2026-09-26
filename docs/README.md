@@ -1,114 +1,80 @@
-# Veritas RAG 文档树
+# Veritas RAG 文档中心
 
-这是 `docs/` 的唯一导航入口。文档按“项目总览 → 产品/架构 → 模块实现 → 评测与优化 → 规划”组织。后续优化某个模块时，先从本页进入对应的模块文档，再回写实现说明、评测记录和变更状态。
+> 文档结构最后整理于 2026-09-26。代码和迁移脚本是最终事实源。
 
-## 文档树
-
-```text
-Veritas RAG 文档
-├── 00 项目总览
-│   ├── 项目现状梳理.md                    # 当前代码、运行环境、边界和入口
-│   ├── 项目学习路线与代码阅读指南.md       # 按调用链阅读源码
-│   └── 成熟 Agentic RAG 工程落地设计方案.md # 长期工程目标与演进路线
-│
-├── 10 产品与版本规划
-│   ├── V1.5 更懂用户的个人助手 PRD.md      # 当前版本需求与验收基线
-│   └── 多模态解析与检索增强PRD.md          # Markdown 多模态及后续扩展规划
-│
-├── 20 架构与实现
-│   ├── react-agent/                         # V1.6 ReAct 重构需求与迁移基线
-│   │   ├── README.md                        # 总体架构、循环、工具、记忆与上下文
-│   │   ├── ReAct运行时与工具协议.md          # 可映射代码的 Tool/Observation 契约
-│   │   └── 迁移计划与验收标准.md             # 分阶段实施、评测、灰度和完成定义
-│   ├── Agentic RAG 实现说明.md              # 全链路实现主文档
-│   ├── 检索融合与端到端流程.md              # 检索链路专题
-│   ├── 会话记忆与上下文工程实现说明.md      # 当前实现契约、差距和落地顺序
-│   └── 会话记忆与上下文工程.md              # V1.6 三层记忆与上下文设计基线
-│
-├── 30 评测与优化记录
-│   ├── RAG检索与生成评估完整流程.md         # 检索/生成评测总流程
-│   ├── RAGAS答案生成评估使用说明.md         # RAGAS 指标和使用方法
-│   └── T2Retrieval检索评估扩容与去重优化记录.md # 检索专项实验记录
-│
-└── 40 表达与面试材料
-    └── Agentic RAG 项目面试准备.md          # 面试表达，不作为实现事实唯一来源
-```
-
-## 阅读和更新关系
+## 1. 文档树
 
 ```text
-项目现状梳理
-  ├── 读取 -> Agentic RAG 实现说明
-  │             ├── 入库 -> parser/chunker/ingestion
-  │             ├── 检索 -> 检索融合与端到端流程
-  │             ├── 记忆 -> 会话记忆与上下文工程实现说明
-  │             └── 评测 -> RAG 检索与生成评估完整流程
-  ├── 读取 -> V1.5 PRD（需求与验收）
-  └── 读取 -> 成熟 Agentic RAG 工程落地设计方案（目标架构）
-
-模块优化
-  现状梳理 -> 对应实现说明 -> 代码/迁移 -> 专项测试 -> 评测记录 -> 返回现状梳理
+docs/
+├── README.md
+├── 01-项目现状与阅读指南.md
+├── 02-系统架构与运行流程.md
+├── 03-状态、追踪与失败恢复.md
+├── 04-工具系统与检索.md
+├── 05-上下文工程与记忆机制.md
+├── 06-数据库迁移与灰度切流.md
+├── 产品需求/
+│   ├── V1.5-更懂用户的个人助手.md
+│   └── 多模态解析与检索增强.md
+├── 评测与优化/
+│   ├── RAG检索与生成评测.md
+│   ├── RAGAS答案生成评测.md
+│   └── T2检索优化记录.md
+└── 规划与参考/
+    ├── 成熟智能体系统演进蓝图.md
+    └── 项目面试说明.md
 ```
 
-## 按模块定位
+## 2. 核心文档
 
-| 模块 | 首选文档 | 代码入口 | 评测/验证 |
-|---|---|---|---|
-| ReAct Runtime/Tool Gateway | [V1.6 ReAct 架构](react-agent/README.md)、[运行时与工具协议](react-agent/ReAct运行时与工具协议.md) | 新 Runtime：`backend/agent/`；回退：`backend/graph/` | [迁移与验收](react-agent/迁移计划与验收标准.md) |
-| Markdown 解析与分块 | [实现说明](<Agentic RAG 实现说明.md>)、[多模态 PRD](<多模态解析与检索增强PRD.md>) | `backend/services/ingestion/parser.py`、`chunker.py` | `tests/test_markdown_multimodal.py` |
-| 向量化与入库 | [实现说明](<Agentic RAG 实现说明.md>) | `backend/services/ingestion/ingestion.py`、`backend/embeddings/` | 入库测试、Chroma/MySQL 检查 |
-| Dense/BM25/RRF | [检索融合流程](<检索融合与端到端流程.md>) | `backend/services/retrieval/hybrid.py` | T2Retrieval 评测 |
-| 多样性与重排 | [检索融合流程](<检索融合与端到端流程.md>)、[T2 优化记录](<T2Retrieval检索评估扩容与去重优化记录.md>) | `backend/services/retrieval/diversity.py`、`reranker.py` | Recall/MRR/NDCG、Unique Parent Ratio |
-| Query/ReAct 决策 | [ReAct 架构](react-agent/README.md) | `backend/agent/controller.py`、`backend/agent/graph.py`；旧节点仅作 legacy 回退 | `test_react_graph.py`、Shadow 指标 |
-| 证据/引用/拒答 | [ReAct 架构](react-agent/README.md) | `backend/agent/evidence/ledger.py`、`backend/agent/verification.py` | `test_evidence_ledger.py`、Citation 指标 |
-| 会话/摘要/长期记忆 | [记忆实现说明](<会话记忆与上下文工程实现说明.md>) | `backend/agent/memory/`、`backend/services/memory/`、`backend/services/chat/` | `test_memory_v2_conflicts.py`、`test_react_session_isolation.py` |
-| 上下文预算 | [记忆实现说明](<会话记忆与上下文工程实现说明.md>) | `backend/agent/context/builder.py`；旧 assembler 供 legacy 使用 | `test_react_context.py` |
-| Trace/Feedback | [V1.5 PRD](<V1.5 更懂用户的个人助手 PRD.md>)、[成熟方案](<成熟 Agentic RAG 工程落地设计方案.md>) | `backend/services/trace_service.py`、`backend/api/v1/endpoints/rag.py` | `test_v15_trace.py` |
-| Markdown 能力边界 | [项目现状](<项目现状梳理.md>)、[V1.5 PRD](<V1.5 更懂用户的个人助手 PRD.md>) | `backend/api/v1/endpoints/knowledge.py` | `test_v15_markdown_only.py` |
-| 前端聊天/知识库/记忆 | [V1.5 PRD](<V1.5 更懂用户的个人助手 PRD.md>) | `frontend/src/pages/`、`frontend/src/services/` | `npm run build` |
+| 文档 | 解决的问题 |
+| --- | --- |
+| [01-项目现状与阅读指南](01-项目现状与阅读指南.md) | 当前实现了什么、边界是什么、源码从哪里读 |
+| [02-系统架构与运行流程](02-系统架构与运行流程.md) | 三种 Runtime、ReAct Graph、Decision、Evidence、隔离机制 |
+| [03-状态、追踪与失败恢复](03-状态、追踪与失败恢复.md) | AgentState、Trace 保存范围、为何当前不能节点续跑、Checkpoint 方案 |
+| [04-工具系统与检索](04-工具系统与检索.md) | Registry、Policy、Gateway、知识库/Web 工具、入库和检索 |
+| [05-上下文工程与记忆机制](05-上下文工程与记忆机制.md) | Working/短期/长期记忆、动态 Prompt、300k 级预算 |
+| [06-数据库迁移与灰度切流](06-数据库迁移与灰度切流.md) | 数据库迁移、Shadow、灰度、验收和回滚 |
 
-## 文档职责和事实优先级
+这六份文档描述当前主架构与直接下一步，避免同一能力在多个大文件中重复维护。
 
-1. 代码和数据库迁移是运行事实。
-2. `项目现状梳理.md` 是当前状态摘要和已知边界。
-3. `Agentic RAG 实现说明.md` 是当前主链路实现细节。
-4. 专题实现文档负责深入一个模块，不重复维护整个系统概览。
-5. PRD 负责需求范围和验收，不代表功能已经实现；完成状态必须回写现状文档。
-6. 评测记录负责实验数据和参数，不直接替代实现说明。
-7. 面试文档是表达材料，若与代码冲突，以代码和现状文档为准。
+## 3. 产品需求
 
-## 模块文档拆分规则
+- [V1.5-更懂用户的个人助手](产品需求/V1.5-更懂用户的个人助手.md)：V1.5 产品目标、记忆治理、Trace 和前后端验收。
+- [多模态解析与检索增强](产品需求/多模态解析与检索增强.md)：Markdown-only 之后的多格式与多模态规划，属于后续版本。
 
-当单个文档超过约 400 行，或一个模块出现 3 个以上独立优化主题时，拆成：
+## 4. 评测与优化
 
-```text
-模块总览.md
-├── 模块-数据模型.md
-├── 模块-运行流程.md
-├── 模块-策略与参数.md
-├── 模块-测试与评测.md
-└── 模块-优化记录.md
-```
+- [RAG 检索与生成评测](评测与优化/RAG检索与生成评测.md)：检索与端到端评测流程。
+- [RAGAS 答案生成评测](评测与优化/RAGAS答案生成评测.md)：RAGAS 指标与使用方式。
+- [T2 检索优化记录](评测与优化/T2检索优化记录.md)：特定检索实验和优化历史。
 
-总览文档只保留职责、调用链、关键参数、当前状态和子文档链接；详细实现放入子文档，避免复制粘贴导致事实漂移。
+评测文档可能记录某一历史版本的实验参数。判断当前实现时，应同时核对核心文档和源码。
 
-## 模块优化时的固定流程
+## 5. 规划与参考
 
-1. 在本页确定模块和首选文档。
-2. 阅读现状、PRD 和对应实现专题。
-3. 修改代码、迁移、测试和文档锚点。
-4. 运行 `conda run -n cook-rag-1 pytest -q` 与 `frontend/npm run build`。
-5. 将参数、指标、已知边界和未完成项写入对应专题/评测记录。
-6. 更新 `项目现状梳理.md` 的状态摘要。
-7. 提交时说明影响的模块和文档节点。
+- [成熟智能体系统演进蓝图](规划与参考/成熟智能体系统演进蓝图.md)：MCP、Skill、多 Agent、Checkpoint 等长期演进方向，不代表全部已实现。
+- [项目面试说明](规划与参考/项目面试说明.md)：用于讲解项目设计取舍，不能替代当前实现文档。
 
-## 当前建议的下一批模块
+## 6. 按问题查文档
 
-```text
-1. Trace/Span：从事件汇总升级为统一埋点和 token/cost 统计
-2. Memory：确认态、冲突、过期、tombstone 和跨项目隔离
-3. Markdown Ingestion：版本、hash、增量索引和结构化 block
-4. Evidence：claim-level citation 与拒答质量
-5. Session：分支、归档、恢复和并发 checkpoint
-6. Tool Gateway：为后续 MCP/Skill 预留权限、超时、幂等和审计
-```
+| 想了解的问题 | 入口 |
+| --- | --- |
+| 新框架到底怎么运行 | [02](02-系统架构与运行流程.md) |
+| State 有哪些字段 | [03](03-状态、追踪与失败恢复.md) |
+| 是否保存每一步 Trace | [03](03-状态、追踪与失败恢复.md) |
+| 能否从失败节点恢复 | [03](03-状态、追踪与失败恢复.md) |
+| 工具如何授权和幂等 | [04](04-工具系统与检索.md) |
+| RAG 检索如何成为 Tool | [04](04-工具系统与检索.md) |
+| 动态 Prompt 如何组装 | [05](05-上下文工程与记忆机制.md) |
+| 三层记忆如何加载与更新 | [05](05-上下文工程与记忆机制.md) |
+| 如何从 Legacy 切到 ReAct | [06](06-数据库迁移与灰度切流.md) |
+| V1.5 是否符合产品目标 | [V1.5 PRD](产品需求/V1.5-更懂用户的个人助手.md) |
+
+## 7. 维护规则
+
+1. 当前架构变化优先修改 01～06 中对应模块，不再新增“全量实现说明”大文件。
+2. 产品目标放入 `产品需求/`，实验数据放入 `评测与优化/`，远期方案放入 `规划与参考/`。
+3. 规划能力必须标注“未实现”，不得与当前能力混写。
+4. 修改 State、Tool、Memory、Trace 或迁移脚本时，同步更新对应核心文档。
+5. 文档链接使用相对路径，提交前执行死链接和旧文件名搜索。
