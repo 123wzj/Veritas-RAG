@@ -203,7 +203,10 @@ export interface MemoryAuditEntry {
 export interface TraceSpan {
   id: number
   request_id: string
+  attempt_no: number
   span_name: string
+  node_name?: string | null
+  span_kind: string
   status: string
   started_at?: string | null
   ended_at?: string | null
@@ -213,6 +216,45 @@ export interface TraceSpan {
   output_tokens: number
   metadata: Record<string, unknown>
   error?: string | null
+}
+
+export interface TraceAttempt {
+  id: number
+  request_id: string
+  attempt_no: number
+  status: string
+  resumed: boolean
+  stop_reason?: string | null
+  error?: string | null
+  started_at?: string | null
+  ended_at?: string | null
+}
+
+export interface TraceEvent {
+  id: number
+  request_id: string
+  attempt_no: number
+  sequence_no: number
+  event_name: string
+  node_name?: string | null
+  status?: string | null
+  metadata: Record<string, unknown>
+  created_at?: string | null
+}
+
+export interface ContextManifest {
+  id: number
+  request_id: string
+  attempt_no: number
+  node_name: string
+  iteration: number
+  model_name?: string | null
+  token_budget: number
+  token_used: number
+  loaded_sections: string[]
+  omitted_sections: string[]
+  section_usage: Record<string, unknown>
+  created_at?: string | null
 }
 
 export interface TraceRun {
@@ -240,6 +282,9 @@ export interface TraceRun {
   created_at?: string | null
   completed_at?: string | null
   spans: TraceSpan[]
+  attempts: TraceAttempt[]
+  events: TraceEvent[]
+  context_manifests: ContextManifest[]
 }
 
 export interface Feedback {

@@ -112,6 +112,15 @@ def _sync_legacy_schema() -> None:
     _ensure_column("rag_runs", "tool_call_count", "`tool_call_count` INT NOT NULL DEFAULT 0")
     _ensure_column("rag_runs", "budget_profile", "`budget_profile` VARCHAR(40) NULL")
     _ensure_column("rag_runs", "shadow_metrics", "`shadow_metrics` JSON NULL")
+    _ensure_column("rag_spans", "attempt_no", "`attempt_no` INT NOT NULL DEFAULT 1 AFTER `request_id`")
+    _ensure_column("rag_spans", "node_name", "`node_name` VARCHAR(60) NULL AFTER `span_name`")
+    _ensure_column("rag_spans", "span_kind", "`span_kind` VARCHAR(30) NOT NULL DEFAULT 'agent_node' AFTER `node_name`")
+    _ensure_index(
+        "rag_spans",
+        "uq_rag_span_attempt_name",
+        "CREATE UNIQUE INDEX `uq_rag_span_attempt_name` "
+        "ON `rag_spans` (`request_id`, `attempt_no`, `span_name`)",
+    )
 
     _ensure_column("messages", "citations", "`citations` JSON NULL")
     _ensure_column("messages", "token_count", "`token_count` INT NOT NULL DEFAULT 0")

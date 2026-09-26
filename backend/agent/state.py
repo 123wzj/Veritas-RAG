@@ -42,7 +42,13 @@ class AgentState(TypedDict, total=False):
     verification: Optional[Dict[str, Any]]
     memory_update_plan: Optional[Dict[str, Any]]
     context_token_usage: Dict[str, Any]
+    last_context_manifest: Dict[str, Any]
+    input_tokens: int
     output_tokens: int
+
+    trace_attempt_no: int
+    trace_node_counts: Dict[str, int]
+    trace_event_offset: int
 
     events: List[Dict[str, Any]]
     latency_breakdown_ms: Dict[str, float]
@@ -82,7 +88,7 @@ def create_agent_state(
         "tool_calls": [],
         "observations": [],
         "idempotency_cache": {},
-        "evidence_ledger": {"entries": {}, "slot_coverage": {}, "conflicts": [], "next_index": 1},
+        "evidence_ledger": {"entries": {}, "slot_coverage": {}, "conflicts": [], "next_index": 1, "next_conflict_index": 1},
         "selected_evidence": [],
         "iteration": 0,
         "budgets": budgets or {},
@@ -97,7 +103,12 @@ def create_agent_state(
         "verification": None,
         "memory_update_plan": None,
         "context_token_usage": {},
+        "last_context_manifest": {},
+        "input_tokens": 0,
         "output_tokens": 0,
+        "trace_attempt_no": 1,
+        "trace_node_counts": {},
+        "trace_event_offset": 0,
         "events": [],
         "latency_breakdown_ms": {},
         "error": None,

@@ -63,7 +63,10 @@ class FeedbackResponse(BaseModel):
 class TraceSpanResponse(BaseModel):
     id: int
     request_id: str
+    attempt_no: int = 1
     span_name: str
+    node_name: Optional[str] = None
+    span_kind: str = "agent_node"
     status: str
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
@@ -73,6 +76,45 @@ class TraceSpanResponse(BaseModel):
     output_tokens: int = 0
     metadata: dict = {}
     error: Optional[str] = None
+
+
+class TraceAttemptResponse(BaseModel):
+    id: int
+    request_id: str
+    attempt_no: int
+    status: str
+    resumed: bool = False
+    stop_reason: Optional[str] = None
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+
+
+class TraceEventResponse(BaseModel):
+    id: int
+    request_id: str
+    attempt_no: int
+    sequence_no: int
+    event_name: str
+    node_name: Optional[str] = None
+    status: Optional[str] = None
+    metadata: dict = {}
+    created_at: Optional[datetime] = None
+
+
+class ContextManifestResponse(BaseModel):
+    id: int
+    request_id: str
+    attempt_no: int
+    node_name: str
+    iteration: int
+    model_name: Optional[str] = None
+    token_budget: int = 0
+    token_used: int = 0
+    loaded_sections: list[str] = []
+    omitted_sections: list[str] = []
+    section_usage: dict = {}
+    created_at: Optional[datetime] = None
 
 
 class TraceRunResponse(BaseModel):
@@ -100,6 +142,9 @@ class TraceRunResponse(BaseModel):
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     spans: list[TraceSpanResponse] = []
+    attempts: list[TraceAttemptResponse] = []
+    events: list[TraceEventResponse] = []
+    context_manifests: list[ContextManifestResponse] = []
 
 
 class TraceResponse(BaseModel):

@@ -57,6 +57,20 @@ class EvidenceLedgerService:
 
         observation.evidence_ids = list(dict.fromkeys(observation_ids))
         observation.evidence = [ledger.entries[item_id] for item_id in observation.evidence_ids]
+        candidate_slots = {
+            slot_id
+            for item in observation.evidence
+            for slot_id in item.target_slots
+        }
+        for slot_id in candidate_slots:
+            coverage = ledger.slot_coverage.get(slot_id, SlotCoverage())
+            if coverage.status != "supported":
+                coverage.status = "partial"
+            coverage.evidence_ids = list(dict.fromkeys([
+                *coverage.evidence_ids,
+                *observation.evidence_ids,
+            ]))
+            ledger.slot_coverage[slot_id] = coverage
         for slot_id in observation.supported_slots:
             coverage = ledger.slot_coverage.get(slot_id, SlotCoverage())
             coverage.status = "supported"
@@ -67,8 +81,12 @@ class EvidenceLedgerService:
             ledger.slot_coverage[slot_id] = coverage
         for slot_id in observation.missing_slots:
             ledger.slot_coverage.setdefault(slot_id, SlotCoverage(status="missing"))
-        if observation.conflicts:
-            ledger.conflicts.extend(observation.conflicts)
+        for raw_conflict in observation.conflicts:
+            conflict = dict(raw_conflict)
+            if not conflict.get("conflict_id"):
+                conflict["conflict_id"] = f"X{ledger.next_conflict_index}"
+                ledger.next_conflict_index += 1
+            ledger.conflicts.append(conflict)
         return ledger, observation, added
 
     @staticmethod

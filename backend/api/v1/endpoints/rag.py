@@ -19,7 +19,7 @@ from backend.db.mysql.connection import get_db as get_db_func
 from backend.agent.runtime import get_runtime_mode, run_rag_runtime
 from backend.core.config import settings
 from backend.models.schemas.rag import RAGQueryRequest
-from backend.models.database.user import AnswerFeedbackTable, MessageTable, SessionTable, RAGRunTable, RAGSpanTable
+from backend.models.database.user import AnswerFeedbackTable, MessageTable, SessionTable, RAGRunTable
 from backend.api.deps.common import get_required_user
 from backend.services.chat.turn_service import turn_service
 from backend.services.trace_service import trace_service
@@ -33,6 +33,21 @@ def _format_sse(event: dict) -> str:
     event_type = event.get("event", "unknown")
     data = event.get("data", {})
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _safe_trace_error(value: object) -> str:
+    """Return a stable user-safe error summary; full details stay in server logs."""
+
+    text = str(value or "").lower()
+    if "deadline" in text or "timeout" in text:
+        return "runtime_timeout"
+    if "agent_decision_failed" in text:
+        return "agent_decision_failed"
+    if "semantic verifier" in text:
+        return "semantic_verification_failed"
+    if "checkpoint" in text:
+        return "checkpoint_runtime_interrupted"
+    return "react_runtime_interrupted"
 
 
 async def _generate_sse_from_graph(
@@ -59,6 +74,7 @@ async def _generate_sse_from_graph(
     resolved_branch_id: int | None = branch_id
     request_id = request_id or str(uuid.uuid4())
     runtime_mode = get_runtime_mode()
+    trace_attempt_no = 1
 
     try:
         turn = turn_service.begin_turn(
@@ -75,6 +91,16 @@ async def _generate_sse_from_graph(
         resolved_session_id = session.session_id
         resolved_branch_id = turn.get("branch_id")
         trace_service.start_run(db, request_id=request_id, user_id=user_id, session_id=resolved_session_id, kb_id=kb_id, runtime_mode=runtime_mode, budget_profile=settings.AGENT_CONTEXT_PROFILE)
+        attempt = trace_service.start_attempt(db, request_id=request_id)
+        trace_attempt_no = attempt.attempt_no
+        trace_service.record_event(
+            db,
+            request_id=request_id,
+            attempt_no=trace_attempt_no,
+            event_name="run.started",
+            status="running",
+            metadata={"resumed": attempt.resumed},
+        )
         db.commit()
         if created:
             logger.info("自动创建会话成功: session_id=%s", resolved_session_id)
@@ -88,6 +114,8 @@ async def _generate_sse_from_graph(
                     "query": query,
                     "session_id": resolved_session_id,
                     "request_id": request_id,
+                    "attempt_no": trace_attempt_no,
+                    "resumed": attempt.resumed,
                 },
             }
         )
@@ -110,6 +138,7 @@ async def _generate_sse_from_graph(
             top_k=top_k,
             branch_id=resolved_branch_id,
             runtime_mode=runtime_mode,
+            trace_attempt_no=trace_attempt_no,
         ):
             if not isinstance(event, dict):
                 continue
@@ -120,7 +149,37 @@ async def _generate_sse_from_graph(
                 final_state.update(state)
 
                 state_events = state.get("events", [])
-                for evt in state_events[emitted_event_count:]:
+                emitted_event_count = max(
+                    emitted_event_count,
+                    int(state.get("trace_event_offset") or 0),
+                )
+                new_events = state_events[emitted_event_count:]
+                if new_events:
+                    event_db = next(get_db_func())
+                    try:
+                        for evt in new_events:
+                            event_name = str(evt.get("event") or "unknown")
+                            trace_service.record_event(
+                                event_db,
+                                request_id=request_id,
+                                attempt_no=trace_attempt_no,
+                                event_name=event_name,
+                                node_name={
+                                    "memory.loaded": "hydrate_context",
+                                    "agent.decision": "decide",
+                                    "tool.requested": "act",
+                                    "tool.completed": "act",
+                                    "observation.created": "observe",
+                                    "evidence.updated": "observe",
+                                    "answer.verified": "verify",
+                                    "memory.update.planned": "memory",
+                                }.get(event_name),
+                                metadata=evt.get("data") if isinstance(evt.get("data"), dict) else {},
+                            )
+                        event_db.commit()
+                    finally:
+                        event_db.close()
+                for evt in new_events:
                     if evt.get("event") in {"answer.completed", "memory.update.planned"}:
                         continue
                     yield _format_sse(evt)
@@ -136,11 +195,28 @@ async def _generate_sse_from_graph(
                 runtime_error = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
                 error_value = state.get("error") or runtime_error.get("error")
                 if error_value:
+                    safe_error = _safe_trace_error(error_value)
                     resumable = bool(state.get("resumable") or runtime_error.get("resumable"))
                     stop_reason = state.get("stop_reason") or runtime_error.get("stop_reason")
                     error_db = next(get_db_func())
                     try:
-                        trace_service.finish_run(error_db, request_id=request_id, final_status="interrupted" if resumable else "failed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), reflection_count=int(final_state.get("reflection_count") or 0), stop_reason=stop_reason, error=str(error_value))
+                        trace_service.finish_run(error_db, request_id=request_id, final_status="interrupted" if resumable else "failed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), reflection_count=int(final_state.get("reflection_count") or 0), stop_reason=stop_reason, error=safe_error)
+                        trace_service.finish_attempt(
+                            error_db,
+                            request_id=request_id,
+                            attempt_no=trace_attempt_no,
+                            status="interrupted" if resumable else "failed",
+                            stop_reason=stop_reason,
+                            error=safe_error,
+                        )
+                        trace_service.record_event(
+                            error_db,
+                            request_id=request_id,
+                            attempt_no=trace_attempt_no,
+                            event_name="run.failed",
+                            status="interrupted" if resumable else "failed",
+                            metadata={"stop_reason": stop_reason, "resumable": resumable},
+                        )
                         error_db.commit()
                     finally:
                         error_db.close()
@@ -148,11 +224,12 @@ async def _generate_sse_from_graph(
                         {
                             "event": "run.failed",
                             "data": {
-                                "error": error_value,
+                                "error": safe_error,
                                 "session_id": resolved_session_id,
                                 "request_id": request_id,
                                 "resumable": resumable,
                                 "stop_reason": stop_reason,
+                                "attempt_no": trace_attempt_no,
                             },
                         }
                     )
@@ -161,35 +238,22 @@ async def _generate_sse_from_graph(
         if final_answer:
             db = next(get_db_func())
             try:
-                started_span_names = set()
-                span_map = {
-                    "memory.loaded": "memory.load", "query.rewritten": "query.rewrite", "query.decomposed": "query.decompose",
-                    "route.planned": "route.plan", "retrieval.dense": "retrieval.dense", "retrieval.sparse": "retrieval.sparse",
-                    "rrf.completed": "rrf", "rerank.completed": "rerank", "evidence.graded": "evidence.grade",
-                    "reflection.completed": "reflection", "answer.delta": "generation", "answer.completed": "verification",
-                    "memory.updated": "memory.update",
-                }
-                for graph_event in final_state.get("events", []):
-                    event_name = graph_event.get("event")
-                    span_name = span_map.get(event_name)
-                    if span_name and span_name not in started_span_names:
-                        trace_service.record_span(db, request_id=request_id, span_name=span_name, metadata={"event": event_name, "count": graph_event.get("data", {}).get("count") if isinstance(graph_event.get("data"), dict) else None})
-                        started_span_names.add(span_name)
-                # Persist deterministic node timings even when a node does not
-                # emit a public event. Event-derived spans are supplemented,
-                # never duplicated, by the graph state's measured timings.
-                for span_name, latency in (final_state.get("latency_breakdown_ms") or {}).items():
-                    normalized = str(span_name)
-                    if normalized not in started_span_names:
-                        trace_service.record_span(
-                            db,
-                            request_id=request_id,
-                            span_name=normalized,
-                            latency_ms=int(latency or 0),
-                            metadata={"source": "graph.latency_breakdown"},
-                        )
-                        started_span_names.add(normalized)
-                trace_service.finish_run(db, request_id=request_id, final_status="completed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type") or "react", answer_mode=(final_state.get("evidence_grade") or {}).get("answer_mode") if isinstance(final_state.get("evidence_grade"), dict) else None, reflection_count=int(final_state.get("reflection_count") or 0), input_tokens=int((final_state.get("context_token_usage") or {}).get("used") or 0), output_tokens=int(final_state.get("output_tokens") or 0), selected_evidence_ids=[str(item.get("evidence_id")) for item in final_state.get("selected_evidence", []) if item.get("evidence_id")], selected_memory_ids=(final_state.get("memory_context") or {}).get("selected_memory_ids") or [], runtime_mode=runtime_mode, iteration_count=int(final_state.get("iteration") or 0), stop_reason=final_state.get("stop_reason"), tool_call_count=len(final_state.get("tool_calls") or []), budget_profile=(final_state.get("budgets") or {}).get("profile") or settings.AGENT_CONTEXT_PROFILE, shadow_metrics={})
+                trace_service.finish_run(db, request_id=request_id, final_status="completed", total_latency_ms=int((time.time() - start_time) * 1000), route_type="react", answer_mode=(final_state.get("verification") or {}).get("recommended_action") if isinstance(final_state.get("verification"), dict) else None, reflection_count=0, input_tokens=int(final_state.get("input_tokens") or 0), output_tokens=int(final_state.get("output_tokens") or 0), selected_evidence_ids=[str(item.get("evidence_id")) for item in final_state.get("selected_evidence", []) if item.get("evidence_id")], selected_memory_ids=(final_state.get("memory_context") or {}).get("selected_memory_ids") or [], runtime_mode=runtime_mode, iteration_count=int(final_state.get("iteration") or 0), stop_reason=final_state.get("stop_reason"), tool_call_count=len(final_state.get("tool_calls") or []), budget_profile=(final_state.get("budgets") or {}).get("profile") or settings.AGENT_CONTEXT_PROFILE, shadow_metrics={})
+                trace_service.finish_attempt(
+                    db,
+                    request_id=request_id,
+                    attempt_no=trace_attempt_no,
+                    status="completed",
+                    stop_reason=final_state.get("stop_reason"),
+                )
+                trace_service.record_event(
+                    db,
+                    request_id=request_id,
+                    attempt_no=trace_attempt_no,
+                    event_name="run.completed",
+                    status="completed",
+                    metadata={"stop_reason": final_state.get("stop_reason")},
+                )
                 persisted = turn_service.finalize_turn(
                     db=db,
                     user_id=user_id,
@@ -208,6 +272,7 @@ async def _generate_sse_from_graph(
                 "data": {
                     "request_id": request_id,
                     "session_id": resolved_session_id,
+                    "attempt_no": trace_attempt_no,
                     **(persisted.get("memory") or {}),
                 },
             })
@@ -248,6 +313,14 @@ async def _generate_sse_from_graph(
                 reflection_count=int(final_state.get("reflection_count") or 0),
                 error="No answer generated",
             )
+            trace_service.finish_attempt(
+                error_db,
+                request_id=request_id,
+                attempt_no=trace_attempt_no,
+                status="failed",
+                stop_reason="no_answer",
+                error="No answer generated",
+            )
             error_db.commit()
         finally:
             error_db.close()
@@ -257,6 +330,7 @@ async def _generate_sse_from_graph(
                 "data": {
                     "error": "No answer generated",
                     "session_id": resolved_session_id,
+                    "attempt_no": trace_attempt_no,
                 },
             }
         )
@@ -264,17 +338,20 @@ async def _generate_sse_from_graph(
         raise
     except Exception as exc:
         logger.error("查询处理异常: %s", exc, exc_info=True)
+        safe_error = _safe_trace_error(exc)
         try:
             error_db = next(get_db_func())
-            trace_service.finish_run(error_db, request_id=request_id, final_status="failed", total_latency_ms=int((time.time() - start_time) * 1000), error=str(exc))
-            error_db.commit(); error_db.close()
+            trace_service.finish_run(error_db, request_id=request_id, final_status="failed", total_latency_ms=int((time.time() - start_time) * 1000), error=safe_error)
+            trace_service.finish_attempt(error_db, request_id=request_id, attempt_no=trace_attempt_no, status="failed", stop_reason="api_error", error=safe_error)
+            error_db.commit()
+            error_db.close()
         except Exception:
             logger.exception("Failed to persist trace failure")
         yield _format_sse(
             {
                 "event": "run.failed",
                 "data": {
-                    "error": str(exc),
+                    "error": safe_error,
                     "session_id": resolved_session_id,
                 },
             }

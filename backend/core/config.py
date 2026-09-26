@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     AGENT_CONTEXT_INPUT_TOKEN_LIMIT: int = 32000
     AGENT_OUTPUT_TOKEN_RESERVE: int = 8192
     AGENT_RUN_DEADLINE_MS: int = 120000
+    AGENT_SEMANTIC_VERIFICATION_ENABLED: bool = True
+    AGENT_SEMANTIC_VERIFICATION_MAX_CLAIMS: int = 12
     AGENT_CHECKPOINT_PATH: str = "data/langgraph/checkpoints.sqlite3"
 
     # Context engineering and memory budgets.

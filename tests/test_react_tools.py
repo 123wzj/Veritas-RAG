@@ -34,7 +34,8 @@ def test_knowledge_search_wraps_existing_retrieval(monkeypatch):
     ))
     assert observation.status == "success"
     assert observation.evidence[0].doc_id == "uuid-doc"
-    assert observation.supported_slots == ["slot-1"]
+    assert observation.supported_slots == []
+    assert observation.evidence[0].target_slots == ["slot-1"]
 
 
 def test_web_search_wraps_provider_and_filters_domains(monkeypatch):

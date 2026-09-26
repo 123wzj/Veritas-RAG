@@ -20,6 +20,17 @@ class AnswerSlot(BaseModel):
     evidence_ids: List[str] = Field(default_factory=list)
 
 
+class AnswerClaim(BaseModel):
+    """Auditable statement submitted with a final answer."""
+
+    claim_id: str
+    text: str
+    slot_id: Optional[str] = None
+    evidence_ids: List[str] = Field(default_factory=list)
+    claim_type: Literal["factual", "reasoning", "personalization", "non_factual"] = "factual"
+    requires_evidence: bool = True
+
+
 class WorkingMemoryV2(BaseModel):
     schema_version: Literal["wm.v2"] = "wm.v2"
     run_id: str
@@ -50,6 +61,8 @@ class AgentDecision(BaseModel):
     tool_calls: List[ToolCallRequest] = Field(default_factory=list)
     answer: Optional[str] = None
     cited_evidence_ids: List[str] = Field(default_factory=list)
+    claims: List[AnswerClaim] = Field(default_factory=list)
+    disclosed_conflict_ids: List[str] = Field(default_factory=list)
     reason_summary: str = Field(default="", max_length=500)
     unresolved_slots: List[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -119,6 +132,7 @@ class EvidenceLedger(BaseModel):
     slot_coverage: Dict[str, SlotCoverage] = Field(default_factory=dict)
     conflicts: List[Dict[str, Any]] = Field(default_factory=list)
     next_index: int = 1
+    next_conflict_index: int = 1
 
 
 class RuntimeBudget(BaseModel):
@@ -155,5 +169,7 @@ class VerificationResult(BaseModel):
     missing_slots: List[str] = Field(default_factory=list)
     unsupported_claims: List[str] = Field(default_factory=list)
     conflicts_not_disclosed: List[str] = Field(default_factory=list)
+    supported_slot_ids: List[str] = Field(default_factory=list)
+    claim_support: List[Dict[str, Any]] = Field(default_factory=list)
     recommended_action: Literal["publish", "retry", "refuse"]
     reason: str = ""

@@ -169,7 +169,33 @@ export function ChatMessage({ message, onResume }: ChatMessageProps) {
                   )}
                 </div>
                 {feedback && <Textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="可选：告诉我们哪里需要改进" rows={2} />}
-                {message.metadata?.trace && <CollapsiblePanel title="运行详情" countLabel={`${message.metadata.trace.spans.length} 个 span`} collapsed={runCollapsed} onToggle={() => setRunCollapsed((value) => !value)}><div className="space-y-2 border-t border-border px-3 py-3 text-xs"><div>request_id: <code>{message.metadata.trace.request_id}</code></div><div>runtime: {message.metadata.trace.runtime_mode} · profile: {message.metadata.trace.budget_profile || "未记录"}</div><div>route_type: {message.metadata.trace.route_type || "未记录"} · answer_mode: {message.metadata.trace.answer_mode || "未记录"}</div><div>检索证据 {message.metadata.trace.selected_evidence_ids.length} 条 · 使用记忆 {message.metadata.trace.selected_memory_ids.length} 条 · Tool {message.metadata.trace.tool_call_count} 次 · 迭代 {message.metadata.trace.iteration_count} 次</div>{message.metadata.trace.spans.map((span) => <div key={span.id} className="flex justify-between gap-3 rounded bg-white px-2 py-1"><span>{span.span_name}</span><span>{span.latency_ms ?? 0} ms</span></div>)}<div>停止原因：{message.metadata.trace.stop_reason || "未记录"} · 最终状态：{message.metadata.trace.final_status}</div></div></CollapsiblePanel>}
+                {message.metadata?.trace && (
+                  <CollapsiblePanel
+                    title="运行详情"
+                    countLabel={`${message.metadata.trace.attempts.length} 次执行 · ${message.metadata.trace.spans.length} 个 span`}
+                    collapsed={runCollapsed}
+                    onToggle={() => setRunCollapsed((value) => !value)}
+                  >
+                    <div className="space-y-2 border-t border-border px-3 py-3 text-xs">
+                      <div>request_id: <code>{message.metadata.trace.request_id}</code></div>
+                      <div>runtime: {message.metadata.trace.runtime_mode} · profile: {message.metadata.trace.budget_profile || "未记录"}</div>
+                      <div>输入 {message.metadata.trace.input_tokens} tokens · 输出 {message.metadata.trace.output_tokens} tokens · Context Manifest {message.metadata.trace.context_manifests.length} 条</div>
+                      <div>检索证据 {message.metadata.trace.selected_evidence_ids.length} 条 · 使用记忆 {message.metadata.trace.selected_memory_ids.length} 条 · Tool {message.metadata.trace.tool_call_count} 次 · 迭代 {message.metadata.trace.iteration_count} 次</div>
+                      {message.metadata.trace.attempts.map((attempt) => (
+                        <div key={attempt.id} className="rounded border border-border bg-white px-2 py-1">
+                          Attempt {attempt.attempt_no} · {attempt.status}{attempt.resumed ? " · 恢复执行" : ""}{attempt.stop_reason ? ` · ${attempt.stop_reason}` : ""}
+                        </div>
+                      ))}
+                      {message.metadata.trace.spans.map((span) => (
+                        <div key={span.id} className="flex justify-between gap-3 rounded bg-white px-2 py-1">
+                          <span>A{span.attempt_no} · {span.node_name || span.span_name} · {span.status}</span>
+                          <span>{span.latency_ms ?? 0} ms</span>
+                        </div>
+                      ))}
+                      <div>事件 {message.metadata.trace.events.length} 条 · 停止原因：{message.metadata.trace.stop_reason || "未记录"} · 最终状态：{message.metadata.trace.final_status}</div>
+                    </div>
+                  </CollapsiblePanel>
+                )}
                 {message.metadata?.trace && message.metadata.trace.selected_memory_ids.length > 0 && <CollapsiblePanel title="使用的记忆" countLabel={`${message.metadata.trace.selected_memory_ids.length} 条`} collapsed={memoryCollapsed} onToggle={() => setMemoryCollapsed((value) => !value)}><div className="border-t border-border px-3 py-3 text-xs text-muted-foreground">{message.metadata.trace.selected_memory_ids.join("、")}</div></CollapsiblePanel>}
               </div>
             )}

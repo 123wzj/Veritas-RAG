@@ -165,6 +165,11 @@ class ReactMemoryService:
         })
         supported = set(observation.get("supported_slots") or [])
         missing = set(observation.get("missing_slots") or [])
+        candidate = {
+            str(slot_id)
+            for evidence in observation.get("evidence") or []
+            for slot_id in evidence.get("target_slots") or []
+        }
         for slot in working.answer_slots:
             if slot.id in supported:
                 slot.status = "supported"
@@ -174,6 +179,12 @@ class ReactMemoryService:
                 ]))
             elif slot.id in missing and slot.status != "supported":
                 slot.status = "missing"
+            elif slot.id in candidate and slot.status == "missing":
+                slot.status = "partial"
+                slot.evidence_ids = list(dict.fromkeys([
+                    *slot.evidence_ids,
+                    *(observation.get("evidence_ids") or []),
+                ]))
         working.unresolved_slots = [
             slot.id for slot in working.answer_slots
             if slot.required and slot.status != "supported"

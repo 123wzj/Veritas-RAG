@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any, Dict, List
 
@@ -26,10 +25,38 @@ CONTROL_TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim_id": {"type": "string"},
+                            "text": {"type": "string"},
+                            "slot_id": {"type": "string"},
+                            "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                            "claim_type": {
+                                "type": "string",
+                                "enum": ["factual", "reasoning", "personalization", "non_factual"],
+                            },
+                            "requires_evidence": {"type": "boolean"},
+                        },
+                        "required": [
+                            "claim_id", "text", "slot_id", "evidence_ids",
+                            "claim_type", "requires_evidence"
+                        ],
+                    },
+                },
+                "disclosed_conflict_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
                 "reason_summary": {"type": "string"},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             },
-            "required": ["answer", "cited_evidence_ids", "reason_summary", "confidence"],
+            "required": [
+                "answer", "cited_evidence_ids", "claims",
+                "disclosed_conflict_ids", "reason_summary", "confidence"
+            ],
         },
     },
     {
@@ -91,6 +118,9 @@ class AgentController:
                 "Never put user/session/kb/run identifiers in tool arguments.",
                 "Do not repeat an action fingerprint that produced no new evidence.",
                 "Cite only Evidence Ledger E# identifiers.",
+                "Every factual final-answer claim must declare claim_id, slot_id and supporting evidence_ids.",
+                "Every required answer slot must be covered by at least one supported claim.",
+                "Disclose relevant Evidence Ledger conflicts and return their conflict ids.",
                 "Use a control tool to finish; never return an unstructured final answer.",
             ],
         }
@@ -129,6 +159,10 @@ class AgentController:
                 type="final_answer",
                 answer=str(args.get("answer") or ""),
                 cited_evidence_ids=[str(item) for item in args.get("cited_evidence_ids") or []],
+                claims=args.get("claims") or [],
+                disclosed_conflict_ids=[
+                    str(item) for item in args.get("disclosed_conflict_ids") or []
+                ],
                 reason_summary=str(args.get("reason_summary") or "")[:500],
                 confidence=float(args.get("confidence") or 0.0),
             )

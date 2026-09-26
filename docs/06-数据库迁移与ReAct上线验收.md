@@ -22,6 +22,7 @@ backend/db/mysql/migrations/20260906_v15_acceptance.sql
 backend/db/mysql/migrations/20260926_react_runtime.sql
 backend/db/mysql/migrations/20260926_react_default.sql
 backend/db/mysql/migrations/20260926_independent_branches_and_checkpoints.sql
+backend/db/mysql/migrations/20260926_p0_verification_trace.sql
 ```
 
 迁移职责：
@@ -30,6 +31,7 @@ backend/db/mysql/migrations/20260926_independent_branches_and_checkpoints.sql
 - `20260926_react_runtime.sql`：ReAct Run 字段、长期记忆治理、Tool Call 与 Observation 表；
 - `20260926_react_default.sql`：将 `rag_runs.runtime_mode` 的数据库默认值改为 `react`。
 - `20260926_independent_branches_and_checkpoints.sql`：分支改为独立 Session 血缘，删除 Branch Summary 字段并增加唯一索引。Checkpoint 本体位于独立 SQLite 文件，不写入 MySQL。
+- `20260926_p0_verification_trace.sql`：统一长期记忆来源枚举，增加 Run Attempt、Event、Context Manifest，并使 Span 在 attempt 内唯一。
 
 历史 Run 的 `runtime_mode` 保持原值，以保证审计准确性；只修改新记录的默认值。
 
@@ -54,6 +56,8 @@ AGENT_RUN_DEADLINE_MS
 AGENT_CONTEXT_PROFILE
 AGENT_CONTEXT_INPUT_TOKEN_LIMIT
 AGENT_OUTPUT_TOKEN_RESERVE
+AGENT_SEMANTIC_VERIFICATION_ENABLED=true
+AGENT_SEMANTIC_VERIFICATION_MAX_CLAIMS=12
 AGENT_CHECKPOINT_PATH=data/langgraph/checkpoints.sqlite3
 MEMORY_LLM_SELECTION_ENABLED=false
 ```
@@ -69,6 +73,7 @@ MEMORY_LLM_SELECTION_ENABLED=false
 - Markdown 入库、父子分块和增量索引正常；
 - `knowledge_search` 与 `web_search` 只能通过 Tool Gateway 执行；
 - Evidence Ledger、引用和拒答正确；
+- factual Claim 必须绑定 Slot 与 Evidence，required Slot 缺失、语义不支持或冲突未披露时禁止发布；
 - 长对话、普通 Session 和独立分叉 Session 隔离正确；
 - 长期记忆确认、冲突、过期和 Tombstone 正确；
 - Memory Update 只在答案完成验证后提交。
@@ -127,6 +132,8 @@ MEMORY_LLM_SELECTION_ENABLED=false
 - [ ] 即使传入 `legacy` 或 `react_shadow`，测试仍进入 ReAct；
 - [ ] Session、Branch、KB ACL 自动化测试通过；
 - [ ] 相同 request_id 可恢复未完成 Checkpoint，已完成 Run 不重复执行；
+- [ ] 真实关闭并重新打开 Checkpointer 后，失败节点恢复且已完成节点不重跑；
+- [ ] `rag_run_attempts/rag_events/context_manifests` 可查询，失败 Run 仍保留节点 Span；
 - [ ] 前端可在可恢复失败消息上复用原 request_id 继续执行；
 - [ ] 生产多实例部署已将 SQLite Checkpointer 迁移到 Postgres/MySQL Saver；
 - [ ] Tool Call 幂等唯一约束生效；

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal
 
@@ -15,11 +16,14 @@ from backend.agent.schemas import RuntimeBudget, ToolCallRequest, ToolExecutionC
 from backend.agent.state import AgentState
 from backend.agent.tools.bootstrap import register_builtin_tools
 from backend.agent.tools.gateway import ToolGateway
-from backend.agent.tools.registry import tool_registry
-from backend.agent.verification import verify_decision
+from backend.agent.verification import verify_decision_with_semantics
 from backend.db.mysql.connection import get_db
-from backend.services.context.context_assembler import estimate_tokens
 from backend.services.memory.memory_service import memory_service
+from backend.services.trace_service import trace_service
+from backend.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 register_builtin_tools()
@@ -111,6 +115,14 @@ async def decide(state: AgentState) -> Dict[str, Any]:
             "pending_tool_calls": pending,
             "decision_feedback": None,
             "context_token_usage": context_usage,
+            "last_context_manifest": {
+                "loaded_sections": metadata["context"].get("loaded_sections") or [],
+                "omitted_sections": metadata["context"].get("omitted_sections") or [],
+                "token_usage": context_usage,
+            },
+            "input_tokens": int(state.get("input_tokens") or 0) + int(
+                usage.get("input_tokens") or context_usage.get("used") or 0
+            ),
             "output_tokens": int(state.get("output_tokens") or 0) + output_tokens,
             "events": [*state.get("events", []), _event("agent.decision", event_data)],
             "latency_breakdown_ms": {**state.get("latency_breakdown_ms", {}), f"react.decide.{state.get('iteration', 0)}": latency},
@@ -245,10 +257,11 @@ async def observe(state: AgentState) -> Dict[str, Any]:
 
 async def verify_answer(state: AgentState) -> Dict[str, Any]:
     decision = state.get("decision") or {}
-    verification = verify_decision(
+    verification, verification_usage = await verify_decision_with_semantics(
         decision,
         state.get("evidence_ledger") or {},
         had_tool_calls=bool(state.get("tool_calls")),
+        working_memory=state.get("working_memory") or {},
     )
     budget = RuntimeBudget.model_validate(state.get("budgets") or {})
     if not verification.publishable and int(state.get("iteration") or 0) < budget.max_iterations:
@@ -256,8 +269,23 @@ async def verify_answer(state: AgentState) -> Dict[str, Any]:
             "verification": verification.model_dump(mode="json"),
             "decision_feedback": verification.model_dump(mode="json"),
             "decision": None,
+            "input_tokens": int(state.get("input_tokens") or 0) + int(verification_usage.get("input_tokens") or 0),
+            "output_tokens": int(state.get("output_tokens") or 0) + int(verification_usage.get("output_tokens") or 0),
+            **({"last_context_manifest": {
+                "loaded_sections": ["answer", "claims", "evidence"],
+                "omitted_sections": [],
+                "token_usage": {
+                    "budget": 0,
+                    "used": int(verification_usage.get("input_tokens") or 0),
+                    "by_section": {},
+                },
+            }} if verification_usage else {}),
             "events": [*state.get("events", []), _event("answer.verified", {
-                "publishable": False, "reason": verification.reason
+                "publishable": False,
+                "reason": verification.reason,
+                "missing_slots": verification.missing_slots,
+                "unsupported_claims": verification.unsupported_claims,
+                "conflicts_not_disclosed": verification.conflicts_not_disclosed,
             })],
         }
 
@@ -280,11 +308,25 @@ async def verify_answer(state: AgentState) -> Dict[str, Any]:
         "citations": citations,
         "confidence": confidence,
         "verification": verification.model_dump(mode="json"),
+        "input_tokens": int(state.get("input_tokens") or 0) + int(verification_usage.get("input_tokens") or 0),
+        "output_tokens": int(state.get("output_tokens") or 0) + int(verification_usage.get("output_tokens") or 0),
+        **({"last_context_manifest": {
+            "loaded_sections": ["answer", "claims", "evidence"],
+            "omitted_sections": [],
+            "token_usage": {
+                "budget": 0,
+                "used": int(verification_usage.get("input_tokens") or 0),
+                "by_section": {},
+            },
+        }} if verification_usage else {}),
         "stop_reason": stop_reason,
         "selected_evidence": [ledger_entries[item] for item in cited_ids if item in ledger_entries],
         "events": [*state.get("events", []), _event("answer.verified", {
             "publishable": verification.publishable,
             "citation_count": len(citations),
+            "missing_slots": verification.missing_slots,
+            "unsupported_claims": verification.unsupported_claims,
+            "conflicts_not_disclosed": verification.conflicts_not_disclosed,
         })],
     }
 
@@ -311,13 +353,172 @@ async def propose_memory_update(state: AgentState) -> Dict[str, Any]:
     finally:
         db.close()
     latency = (time.perf_counter() - started) * 1000
+    plan_usage = plan.get("context_token_usage") or {}
+    model_usage = plan.get("model_token_usage") or {}
     return {
         "memory_update_plan": plan,
         "events": [*state.get("events", []), _event("memory.update.planned", {
             "action_count": len(plan.get("long_term_actions") or [])
         })],
         "latency_breakdown_ms": {**state.get("latency_breakdown_ms", {}), "react.memory_plan": latency},
+        **({"last_context_manifest": {
+            "loaded_sections": plan.get("loaded_context_sections") or [],
+            "omitted_sections": plan.get("omitted_context_sections") or [],
+            "token_usage": plan_usage,
+        }} if plan_usage else {}),
+        "input_tokens": int(state.get("input_tokens") or 0) + int(
+            model_usage.get("input_tokens") or plan_usage.get("used") or 0
+        ),
+        "output_tokens": int(state.get("output_tokens") or 0) + int(model_usage.get("output_tokens") or 0),
     }
+
+
+def _traced_node(node_name: str, handler):
+    """Persist node spans immediately so failed runs retain their timeline."""
+
+    async def wrapped(state: AgentState) -> Dict[str, Any]:
+        iteration = int(state.get("iteration") or 0)
+        node_counts = dict(state.get("trace_node_counts") or {})
+        call_index = int(node_counts.get(node_name) or 0) + 1
+        node_counts[node_name] = call_index
+        attempt_no = max(1, int(state.get("trace_attempt_no") or 1))
+        span_name = f"react.{node_name}.{call_index}"
+        request_id = str(state.get("request_id") or "")
+        started = time.perf_counter()
+
+        if request_id:
+            db = next(get_db())
+            if not hasattr(db, "query"):
+                db.close()
+                db = None
+            try:
+                if db is not None:
+                    trace_service.start_span(
+                        db,
+                        request_id=request_id,
+                        attempt_no=attempt_no,
+                        span_name=span_name,
+                        node_name=node_name,
+                        metadata={"iteration": iteration, "call_index": call_index},
+                    )
+                    db.commit()
+            except Exception:
+                if db is not None and hasattr(db, "rollback"):
+                    db.rollback()
+                logger.exception("Failed to start trace span %s", span_name)
+            finally:
+                if db is not None:
+                    db.close()
+
+        try:
+            result = await handler(state)
+        except Exception as exc:
+            if request_id:
+                db = next(get_db())
+                if not hasattr(db, "query"):
+                    db.close()
+                    db = None
+                try:
+                    if db is not None:
+                        trace_service.record_span(
+                            db,
+                            request_id=request_id,
+                            attempt_no=attempt_no,
+                            span_name=span_name,
+                            node_name=node_name,
+                            status="failed",
+                            latency_ms=int((time.perf_counter() - started) * 1000),
+                            error=type(exc).__name__,
+                            metadata={"iteration": iteration, "call_index": call_index},
+                        )
+                        trace_service.record_event(
+                            db,
+                            request_id=request_id,
+                            attempt_no=attempt_no,
+                            event_name="node.failed",
+                            node_name=node_name,
+                            status="failed",
+                            metadata={
+                                "iteration": iteration,
+                                "call_index": call_index,
+                                "error_type": type(exc).__name__,
+                            },
+                        )
+                        db.commit()
+                except Exception:
+                    if db is not None and hasattr(db, "rollback"):
+                        db.rollback()
+                    logger.exception("Failed to finish failed trace span %s", span_name)
+                finally:
+                    if db is not None:
+                        db.close()
+            raise
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        latency = {
+            **state.get("latency_breakdown_ms", {}),
+            **result.get("latency_breakdown_ms", {}),
+        }
+        latency[span_name] = elapsed_ms
+        result["latency_breakdown_ms"] = latency
+        result["trace_node_counts"] = node_counts
+        result["trace_event_offset"] = int(state.get("trace_event_offset") or 0)
+        if request_id:
+            db = next(get_db())
+            if not hasattr(db, "query"):
+                db.close()
+                db = None
+            try:
+                if db is not None:
+                    input_delta = max(
+                        0,
+                        int(result.get("input_tokens", state.get("input_tokens") or 0))
+                        - int(state.get("input_tokens") or 0),
+                    )
+                    output_delta = max(
+                        0,
+                        int(result.get("output_tokens", state.get("output_tokens") or 0))
+                        - int(state.get("output_tokens") or 0),
+                    )
+                    trace_service.record_span(
+                        db,
+                        request_id=request_id,
+                        attempt_no=attempt_no,
+                        span_name=span_name,
+                        node_name=node_name,
+                        status="completed",
+                        latency_ms=elapsed_ms,
+                        input_tokens=input_delta,
+                        output_tokens=output_delta,
+                        model_name=(
+                            settings.DEEPSEEK_FLASH_MODEL
+                            if node_name in {"decide", "verify", "memory"}
+                            else None
+                        ),
+                        metadata={"iteration": iteration, "call_index": call_index},
+                    )
+                    manifest = result.get("last_context_manifest") or {}
+                    if manifest and node_name in {"decide", "verify", "memory"}:
+                        trace_service.record_context_manifest(
+                            db,
+                            request_id=request_id,
+                            attempt_no=attempt_no,
+                            node_name=node_name,
+                            iteration=call_index,
+                            manifest=manifest,
+                            model_name=settings.DEEPSEEK_FLASH_MODEL,
+                        )
+                    db.commit()
+            except Exception:
+                if db is not None and hasattr(db, "rollback"):
+                    db.rollback()
+                logger.exception("Failed to finish trace span %s", span_name)
+            finally:
+                if db is not None:
+                    db.close()
+        return result
+
+    return wrapped
 
 
 def route_after_decide(state: AgentState) -> Literal["act", "verify", "end"]:
@@ -341,12 +542,12 @@ def route_after_verify(state: AgentState) -> Literal["decide", "memory", "end"]:
 
 def create_react_graph(*, checkpointer=None):
     workflow = StateGraph(AgentState)
-    workflow.add_node("hydrate_context", hydrate_context)
-    workflow.add_node("decide", decide)
-    workflow.add_node("act", execute_tools)
-    workflow.add_node("observe", observe)
-    workflow.add_node("verify", verify_answer)
-    workflow.add_node("memory", propose_memory_update)
+    workflow.add_node("hydrate_context", _traced_node("hydrate_context", hydrate_context))
+    workflow.add_node("decide", _traced_node("decide", decide))
+    workflow.add_node("act", _traced_node("act", execute_tools))
+    workflow.add_node("observe", _traced_node("observe", observe))
+    workflow.add_node("verify", _traced_node("verify", verify_answer))
+    workflow.add_node("memory", _traced_node("memory", propose_memory_update))
     workflow.set_entry_point("hydrate_context")
     workflow.add_edge("hydrate_context", "decide")
     workflow.add_conditional_edges("decide", route_after_decide, {

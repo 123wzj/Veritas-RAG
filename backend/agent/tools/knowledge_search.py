@@ -124,7 +124,9 @@ class KnowledgeSearchTool(AgentTool):
                 else f"Knowledge search found no usable evidence for: {params.query}"
             ),
             evidence=evidence,
-            supported_slots=params.target_slots if evidence else [],
+            # Retrieval produces candidate evidence.  Slot support is decided
+            # only after final claims are explicitly mapped to evidence.
+            supported_slots=[],
             missing_slots=[] if evidence else params.target_slots,
             next_hint="answer" if evidence else "refine_query",
             metrics={

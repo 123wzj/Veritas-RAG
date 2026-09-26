@@ -269,7 +269,10 @@ class RAGSpanTable(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     request_id = Column(String(64), nullable=False, index=True)
+    attempt_no = Column(Integer, nullable=False, default=1)
     span_name = Column(String(60), nullable=False, index=True)
+    node_name = Column(String(60), nullable=True, index=True)
+    span_kind = Column(String(30), nullable=False, default="agent_node")
     status = Column(String(20), nullable=False, default="completed")
     started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
@@ -279,6 +282,86 @@ class RAGSpanTable(Base):
     output_tokens = Column(Integer, nullable=False, default=0)
     metadata_json = Column("metadata", JSON, nullable=True)
     error = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id",
+            "attempt_no",
+            "span_name",
+            name="uq_rag_span_attempt_name",
+        ),
+    )
+
+
+class RAGRunAttemptTable(Base):
+    """One concrete execution or resume attempt for a request."""
+
+    __tablename__ = "rag_run_attempts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, index=True)
+    attempt_no = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False, default="running", index=True)
+    resumed = Column(Boolean, nullable=False, default=False)
+    stop_reason = Column(String(60), nullable=True)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("request_id", "attempt_no", name="uq_rag_run_attempt"),
+    )
+
+
+class RAGEventTable(Base):
+    """Compact, user-safe event timeline for one execution attempt."""
+
+    __tablename__ = "rag_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, index=True)
+    attempt_no = Column(Integer, nullable=False, default=1)
+    sequence_no = Column(Integer, nullable=False)
+    event_name = Column(String(80), nullable=False, index=True)
+    node_name = Column(String(60), nullable=True)
+    status = Column(String(30), nullable=True)
+    metadata_json = Column("metadata", JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id", "attempt_no", "sequence_no", name="uq_rag_event_sequence"
+        ),
+    )
+
+
+class ContextManifestTable(Base):
+    """Prompt composition metadata without persisting raw prompt content."""
+
+    __tablename__ = "context_manifests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, index=True)
+    attempt_no = Column(Integer, nullable=False, default=1)
+    node_name = Column(String(60), nullable=False)
+    iteration = Column(Integer, nullable=False, default=0)
+    model_name = Column(String(100), nullable=True)
+    token_budget = Column(Integer, nullable=False, default=0)
+    token_used = Column(Integer, nullable=False, default=0)
+    loaded_sections = Column(JSON, nullable=True)
+    omitted_sections = Column(JSON, nullable=True)
+    section_usage = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id",
+            "attempt_no",
+            "node_name",
+            "iteration",
+            name="uq_context_manifest_node_iteration",
+        ),
+    )
 
 
 class AgentToolCallTable(Base):

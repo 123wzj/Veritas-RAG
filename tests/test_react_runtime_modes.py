@@ -1,5 +1,10 @@
 import asyncio
 from pathlib import Path
+from typing import TypedDict
+
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, StateGraph
 
 import backend.agent.runtime as runtime_module
 from backend.agent.checkpoint import ReactCheckpointManager
@@ -56,7 +61,7 @@ def test_runtime_resumes_unfinished_checkpoint_with_same_request_id(monkeypatch)
     captured = {}
 
     class Snapshot:
-        values = {"iteration": 2}
+        values = {"iteration": 2, "events": [{"event": "old-1"}, {"event": "old-2"}]}
         next = ("decide",)
 
     class FakeGraph:
@@ -68,6 +73,10 @@ def test_runtime_resumes_unfinished_checkpoint_with_same_request_id(monkeypatch)
             captured["input"] = state
             captured["invoke_config"] = config
             return {"final_answer": "resumed"}
+
+        async def aupdate_state(self, config, values):
+            captured["updated_config"] = config
+            captured["updated_values"] = values
 
     monkeypatch.setattr(runtime_module, "react_graph", FakeGraph())
 
@@ -87,6 +96,10 @@ def test_runtime_resumes_unfinished_checkpoint_with_same_request_id(monkeypatch)
     assert result[0]["final_answer"] == "resumed"
     assert captured["input"] is None
     assert captured["invoke_config"]["configurable"]["thread_id"] == "user:7:run:resume-me"
+    assert captured["updated_values"] == {
+        "trace_attempt_no": 1,
+        "trace_event_offset": 2,
+    }
 
 
 def test_runtime_returns_completed_checkpoint_without_reexecution(monkeypatch):
@@ -132,3 +145,59 @@ def test_checkpoint_manager_creates_persistent_sqlite_file(monkeypatch, tmp_path
 
     asyncio.run(start_and_close())
     assert Path(checkpoint_path).is_file()
+
+
+def test_real_sqlite_checkpoint_resumes_failed_node_after_reopen(tmp_path):
+    checkpoint_path = tmp_path / "real-resume.sqlite3"
+    calls = {"prepare": 0, "unstable": 0}
+
+    class State(TypedDict, total=False):
+        value: int
+        trace_attempt_no: int
+
+    async def prepare(state: State):
+        calls["prepare"] += 1
+        return {"value": int(state.get("value") or 0) + 1}
+
+    async def unstable(state: State):
+        calls["unstable"] += 1
+        if calls["unstable"] == 1:
+            raise RuntimeError("simulated crash")
+        return {"value": int(state.get("value") or 0) + 1}
+
+    def build(saver):
+        workflow = StateGraph(State)
+        workflow.add_node("prepare", prepare)
+        workflow.add_node("unstable", unstable)
+        workflow.set_entry_point("prepare")
+        workflow.add_edge("prepare", "unstable")
+        workflow.add_edge("unstable", END)
+        return workflow.compile(checkpointer=saver)
+
+    async def scenario():
+        config = {"configurable": {"thread_id": "user:1:run:crash"}}
+        first_connection = await aiosqlite.connect(str(checkpoint_path))
+        first_saver = AsyncSqliteSaver(first_connection)
+        await first_saver.setup()
+        first_graph = build(first_saver)
+        try:
+            await first_graph.ainvoke({"value": 0}, config=config)
+        except RuntimeError as exc:
+            assert "simulated crash" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("first execution must fail")
+        await first_connection.close()
+
+        second_connection = await aiosqlite.connect(str(checkpoint_path))
+        second_saver = AsyncSqliteSaver(second_connection)
+        await second_saver.setup()
+        second_graph = build(second_saver)
+        snapshot = await second_graph.aget_state(config)
+        assert snapshot.next == ("unstable",)
+        await second_graph.aupdate_state(config, {"trace_attempt_no": 2})
+        result = await second_graph.ainvoke(None, config=config)
+        await second_connection.close()
+        return result
+
+    assert asyncio.run(scenario())["value"] == 2
+    assert calls == {"prepare": 1, "unstable": 2}

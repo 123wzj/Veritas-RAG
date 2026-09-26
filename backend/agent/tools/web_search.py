@@ -77,7 +77,9 @@ class WebSearchTool(AgentTool):
                 else f"Web search found no usable sources for: {params.query}"
             ),
             evidence=evidence,
-            supported_slots=params.target_slots if evidence else [],
+            # Search hits are candidates, not proof that every requested slot
+            # has already been answered.
+            supported_slots=[],
             missing_slots=[] if evidence else params.target_slots,
             next_hint="answer" if evidence else "clarify",
             metrics={"query": params.query, "evidence_count": len(evidence)},

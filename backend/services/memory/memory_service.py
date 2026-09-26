@@ -641,7 +641,7 @@ class MemoryService:
             freshness_origin = row.last_confirmed_at or row.updated_at or row.created_at
             freshness_days = max(0, (now - freshness_origin).days) if freshness_origin else 365
             freshness_bonus = max(0.0, 1.0 - freshness_days / 365.0)
-            source_bonus = 0.4 if row.source in {"explicit", "confirmed", "user"} else 0.0
+            source_bonus = 0.4 if row.source in {"explicit_user", "user_confirmed"} else 0.0
             category_bonus = 0.5 if category_intent.get(row_category, False) else 0.0
             score = lexical_score + scope_bonus + confidence + access_bonus + freshness_bonus + source_bonus + category_bonus
             scored.append((score, lexical_score, category_bonus, row_category, row))
@@ -1011,7 +1011,12 @@ class MemoryService:
                 continue
             confidence = max(0.0, min(float(raw.get("confidence") or 0.8), 1.0))
             source = str(raw.get("source") or "inferred").strip().lower()
-            if source not in {"inferred", "explicit", "confirmed", "user", "imported"}:
+            source = {
+                "explicit": "explicit_user",
+                "user": "explicit_user",
+                "confirmed": "user_confirmed",
+            }.get(source, source)
+            if source not in {"explicit_user", "user_confirmed", "inferred", "imported", "system"}:
                 source = "inferred"
             status = str(raw.get("status") or "").strip().lower()
             if status not in {"active", "pending_confirmation"}:
@@ -1194,7 +1199,7 @@ class MemoryService:
       "normalized_key": "...",
       "keywords": ["..."],
       "confidence": 0-1,
-      "source": "inferred|explicit|confirmed",
+      "source": "inferred|explicit_user|user_confirmed",
       "status": "pending_confirmation|active",
       "valid_from": "可选 ISO-8601 时间",
       "expires_at": "可选 ISO-8601 时间",
@@ -1308,6 +1313,9 @@ class MemoryService:
                     for item in candidates
                 ],
                 "context_token_usage": prompt_bundle["token_usage"],
+                "loaded_context_sections": prompt_bundle.get("loaded_sections") or [],
+                "omitted_context_sections": prompt_bundle.get("omitted_sections") or [],
+                "model_token_usage": getattr(response, "usage_metadata", None) or {},
             }
         except Exception:
             logger.exception("LLM memory update planning failed")
@@ -1558,7 +1566,7 @@ class MemoryService:
                     proposed_valid_from = self._parse_optional_datetime(action.get("valid_from")) or datetime.now()
                     can_supersede = (
                         resolution == "supersede"
-                        and source in {"explicit", "confirmed", "user", "user_confirmed", "explicit_user"}
+                        and source in {"user_confirmed", "explicit_user"}
                         and proposed_status == "active"
                         and (
                             duplicate.valid_from is None
@@ -1641,7 +1649,7 @@ class MemoryService:
                 target.memory_payload = action.get("memory_payload") or target.memory_payload
                 target.expires_at = self._parse_optional_datetime(action.get("expires_at")) or target.expires_at
                 target.stale_at = self._parse_optional_datetime(action.get("stale_at")) or target.stale_at
-                if action.get("source") in {"explicit", "confirmed", "user"}:
+                if action.get("source") in {"explicit_user", "user_confirmed"}:
                     target.last_confirmed_at = datetime.now()
             elif action_type == "invalidate":
                 target.status = "inactive"

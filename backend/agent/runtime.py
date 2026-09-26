@@ -29,7 +29,6 @@ def _run_config(*, user_id: int, request_id: str) -> Dict[str, Any]:
         **GRAPH_RUN_CONFIG,
         "configurable": {
             "thread_id": f"user:{user_id}:run:{request_id}",
-            "checkpoint_ns": "react",
         },
     }
 
@@ -70,9 +69,10 @@ def _initial_react_state(
     web_enabled: bool,
     top_k: Optional[int],
     branch_id: Optional[int],
+    trace_attempt_no: int,
 ) -> Dict[str, Any]:
     budget = build_runtime_budget()
-    return create_agent_state(
+    state = create_agent_state(
         query=query,
         user_id=user_id,
         request_id=request_id,
@@ -85,6 +85,8 @@ def _initial_react_state(
         branch_id=branch_id,
         budgets=budget.model_dump(mode="json"),
     )
+    state["trace_attempt_no"] = max(1, int(trace_attempt_no))
+    return state
 
 
 async def run_rag_runtime(
@@ -98,6 +100,7 @@ async def run_rag_runtime(
     top_k: Optional[int] = None,
     branch_id: Optional[int] = None,
     runtime_mode: Optional[str] = None,
+    trace_attempt_no: int = 1,
     **_unused_kwargs: Any,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Run every online RAG request through the controlled ReAct graph."""
@@ -116,6 +119,7 @@ async def run_rag_runtime(
         web_enabled=web_enabled,
         top_k=top_k,
         branch_id=branch_id,
+        trace_attempt_no=trace_attempt_no,
     )
     timeout = max(1.0, build_runtime_budget().deadline_ms / 1000.0)
     graph = await _get_runtime_graph()
@@ -128,6 +132,14 @@ async def run_rag_runtime(
             if getattr(snapshot, "next", ()):
                 # Passing None resumes from the next unfinished node. Completed
                 # node writes are not repeated by LangGraph durable execution.
+                if hasattr(graph, "aupdate_state"):
+                    await graph.aupdate_state(
+                        run_config,
+                        {
+                            "trace_attempt_no": max(1, int(trace_attempt_no)),
+                            "trace_event_offset": len(values.get("events") or []),
+                        },
+                    )
                 graph_input = None
             elif values.get("final_answer") or values.get("error"):
                 yield {"checkpoint": values}

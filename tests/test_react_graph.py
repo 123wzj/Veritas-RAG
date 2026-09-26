@@ -2,9 +2,11 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import backend.agent.graph as graph_module
+import backend.agent.verification as verification_module
 from backend.agent.graph import react_graph, route_after_decide, route_after_observe, verify_answer
 from backend.agent.schemas import (
     AgentDecision,
+    AnswerClaim,
     EvidenceItem,
     ToolCallRequest,
     ToolObservation,
@@ -51,6 +53,11 @@ def test_observe_route_uses_explicit_forced_decision():
 
 
 def test_compiled_graph_runs_decide_act_observe_decide_cycle(monkeypatch):
+    monkeypatch.setattr(
+        verification_module.settings,
+        "AGENT_SEMANTIC_VERIFICATION_ENABLED",
+        False,
+    )
     class FakeDb:
         def close(self):
             return None
@@ -66,11 +73,17 @@ def test_compiled_graph_runs_decide_act_observe_decide_cycle(monkeypatch):
             )],
             reason_summary="need evidence",
         ),
-        AgentDecision(
-            type="final_answer",
-            answer="grounded answer [E1]",
-            cited_evidence_ids=["E1"],
-            reason_summary="evidence is sufficient",
+            AgentDecision(
+                type="final_answer",
+                answer="grounded answer [E1]",
+                cited_evidence_ids=["E1"],
+                claims=[AnswerClaim(
+                    claim_id="claim-1",
+                    text="grounded answer",
+                    slot_id="slot-1",
+                    evidence_ids=["E1"],
+                )],
+                reason_summary="evidence is sufficient",
             confidence=0.9,
         ),
     ])
