@@ -5,6 +5,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 from typing import List, Optional
@@ -288,22 +289,41 @@ async def delete_session(
         )
 
     try:
-        # 先删除关联的对话分支
+        # Independent forks are normal sessions. Remove lineage rows attached
+        # to this session, but do not cascade-delete other forked sessions.
         from backend.models.database.user import ConversationBranchTable
-        deleted_branches = db.query(ConversationBranchTable).filter(
-            ConversationBranchTable.session_id == session_id
-        ).delete()
-        logger.info(f"删除对话分支: {deleted_branches} 条")
+        attached_branches = db.query(ConversationBranchTable).filter(
+            or_(
+                ConversationBranchTable.session_id == session_id,
+                ConversationBranchTable.forked_session_id == session_id,
+            )
+        ).all()
+        attached_branch_ids = [item.id for item in attached_branches]
+        if attached_branch_ids:
+            db.query(ConversationBranchTable).filter(
+                ConversationBranchTable.parent_branch_id.in_(attached_branch_ids)
+            ).update({"parent_branch_id": None}, synchronize_session=False)
+            db.query(MessageTable).filter(
+                MessageTable.branch_id.in_(attached_branch_ids)
+            ).update({"branch_id": None}, synchronize_session=False)
 
-        # 删除关联的消息
+        # Delete messages before lineage rows so legacy branch_id foreign keys
+        # cannot block branch cleanup.
         deleted_messages = db.query(MessageTable).filter(
             MessageTable.session_id == session_id
-        ).delete()
+        ).delete(synchronize_session=False)
         logger.info(f"删除消息: {deleted_messages} 条")
+
+        deleted_branches = 0
+        if attached_branch_ids:
+            deleted_branches = db.query(ConversationBranchTable).filter(
+                ConversationBranchTable.id.in_(attached_branch_ids)
+            ).delete(synchronize_session=False)
+        logger.info(f"删除对话分支: {deleted_branches} 条")
 
         db.query(SessionMemoryTable).filter(
             SessionMemoryTable.session_id == session_id
-        ).delete()
+        ).delete(synchronize_session=False)
 
         # 最后删除会话本身
         db.delete(session)
@@ -731,7 +751,8 @@ async def create_branch(
             "branch_name": branch.branch_name,
             "parent_branch_id": branch.parent_branch_id,
             "parent_message_id": branch.parent_message_id,
-            "is_active": branch.is_active,
+            "forked_session_id": branch.forked_session_id,
+            "is_active": False,
             "created_at": branch.created_at.isoformat(),
         }
     except ValueError as e:
@@ -777,8 +798,11 @@ async def switch_branch(
         )
 
     try:
-        branch_service.switch_branch(branch_id, db)
-        return {"message": "Branch switched successfully"}
+        forked_session_id = branch_service.switch_branch(branch_id, db)
+        return {
+            "message": "Branch is an independent session",
+            "session_id": forked_session_id,
+        }
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

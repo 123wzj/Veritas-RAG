@@ -53,6 +53,7 @@ MEMORY_TYPES = {
 }
 MEMORY_CATEGORIES = {"episodic", "semantic", "procedural"}
 MEMORY_ACTIONS = {"create", "merge", "replace", "invalidate", "none"}
+MEMORY_CONFLICT_RESOLUTIONS = {"merge", "supersede", "coexist", "confirm"}
 
 MEMORY_TYPE_TO_CATEGORY = {
     "user_preference": "procedural",
@@ -443,7 +444,6 @@ class MemoryService:
         session_memory: Optional[SessionMemoryTable],
         db: Session,
         branch_id: Optional[int] = None,
-        branch_memory: Optional[ConversationBranchTable] = None,
     ) -> List[Dict[str, Any]]:
         query = db.query(MessageTable).filter(MessageTable.session_id == session_id)
         query = query.filter(
@@ -452,10 +452,8 @@ class MemoryService:
             else MessageTable.branch_id.is_(None)
         )
         summary_cursor = (
-            branch_memory.summary_through_message_id
-            if branch_id is not None and branch_memory
-            else session_memory.summary_through_message_id
-            if session_memory
+            session_memory.summary_through_message_id
+            if branch_id is None and session_memory
             else None
         )
         if summary_cursor:
@@ -622,15 +620,21 @@ class MemoryService:
         }
         scored = []
         for row in rows:
-            category = row.memory_category or self._infer_memory_category(row.memory_type)
+            row_category = row.memory_category or self._infer_memory_category(row.memory_type)
             payload_text = json.dumps(row.memory_payload or {}, ensure_ascii=False, default=str)
-            memory_terms = set(
-                row.keywords
-                or self._extract_keywords(f"{row.content} {payload_text}")
+            memory_terms = {
+                str(item).strip().lower()
+                for item in (row.keywords or [])
+                if str(item).strip()
+            }
+            memory_terms.update(
+                self._extract_keywords(f"{row.content} {payload_text}")
             )
             overlap = len(query_terms & memory_terms)
             exact_bonus = 2.0 if query and query.lower() in row.content.lower() else 0.0
             lexical_score = overlap * 3.0 + exact_bonus
+            if lexical_score <= 0:
+                continue
             scope_bonus = 1.5 if kb_id is not None and row.kb_id == kb_id else 0.5
             confidence = float(row.confidence or 0.0)
             access_bonus = min(int(row.access_count or 0), 10) * 0.02
@@ -638,25 +642,25 @@ class MemoryService:
             freshness_days = max(0, (now - freshness_origin).days) if freshness_origin else 365
             freshness_bonus = max(0.0, 1.0 - freshness_days / 365.0)
             source_bonus = 0.4 if row.source in {"explicit", "confirmed", "user"} else 0.0
-            category_bonus = 0.5 if category_intent.get(category, False) else 0.0
+            category_bonus = 0.5 if category_intent.get(row_category, False) else 0.0
             score = lexical_score + scope_bonus + confidence + access_bonus + freshness_bonus + source_bonus + category_bonus
-            scored.append((score, lexical_score, category_bonus, row))
+            scored.append((score, lexical_score, category_bonus, row_category, row))
         scored.sort(
             key=lambda item: (
                 item[0],
-                item[3].updated_at or item[3].created_at,
+                item[4].updated_at or item[4].created_at,
             ),
             reverse=True,
         )
         result = []
         selected_conflicts = set()
         selected_keys = set()
-        for score, lexical_score, category_bonus, row in scored:
+        for score, lexical_score, category_bonus, row_category, row in scored:
             conflict_key = row.conflict_group or ""
             semantic_key = (
                 row.scope_type,
                 row.kb_id,
-                category,
+                row_category,
                 row.memory_type,
                 row.normalized_key,
             )
@@ -695,7 +699,6 @@ class MemoryService:
         candidates: List[Dict[str, Any]],
         recent_messages: Optional[List[Dict[str, Any]]] = None,
         session_summary: Optional[Dict[str, Any]] = None,
-        branch_summary: Optional[Dict[str, Any]] = None,
         working_memory: Optional[Dict[str, Any]] = None,
         short_context: str = "",
     ) -> List[str]:
@@ -722,7 +725,6 @@ class MemoryService:
                 "query": query,
                 "recent_messages": recent_messages or [],
                 "session_summary": session_summary or {},
-                "branch_summary": branch_summary or {},
                 "working_memory": working_memory or {},
                 "candidate_memories": candidates,
                 "supplemental_context": short_context,
@@ -763,22 +765,17 @@ class MemoryService:
         profile: Dict[str, Any],
         session: Optional[SessionTable],
         session_memory: Optional[SessionMemoryTable],
-        branch_memory: Optional[ConversationBranchTable] = None,
         recent_messages: List[Dict[str, Any]],
         selected_memories: List[Dict[str, Any]],
         query: str,
         working_memory: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         summary = self._normalize_summary(session_memory.summary if session_memory else {})
-        branch_summary = self._normalize_summary(
-            branch_memory.summary if branch_memory else {}
-        )
         transient_working = self._normalize_working_memory(working_memory)
         context_bundle = context_assembler.assemble(
             query=query,
             recent_messages=recent_messages,
             session_summary=summary,
-            branch_summary=branch_summary,
             working_memory=transient_working,
             long_term_memories=selected_memories,
             include_query=False,
@@ -803,9 +800,6 @@ class MemoryService:
             "frequently_asked_topics": profile.get("frequently_asked_topics") or [],
             "session_summary": summary,
             "session_summary_text": self._summary_text(summary),
-            "branch_summary": branch_summary,
-            "branch_summary_text": self._summary_text(branch_summary),
-            "branch_memory_version": int(branch_memory.memory_version or 0) if branch_memory else 0,
             "working_memory": transient_working,
             "open_loops": transient_working.get("open_questions") or [],
             "recent_messages": recent_messages,
@@ -836,8 +830,8 @@ class MemoryService:
         profile = self.get_user_profile(user_id, db) or {}
         session = self._get_session(user_id, session_id, db)
         session_memory = self._ensure_session_memory(session, db)
-        branch_memory = self._get_branch(session_id, branch_id, db)
-        if branch_id is not None and not branch_memory:
+        branch = self._get_branch(session_id, branch_id, db)
+        if branch_id is not None and not branch:
             raise PermissionError("Branch is not part of current session")
         recent_messages = self.get_recent_messages(
             session_id,
@@ -856,8 +850,7 @@ class MemoryService:
         return self._build_memory_payload(
             profile=profile,
             session=session,
-            session_memory=session_memory,
-            branch_memory=branch_memory,
+            session_memory=None if branch_id is not None else session_memory,
             recent_messages=recent_messages,
             selected_memories=candidates,
             query=query,
@@ -877,8 +870,8 @@ class MemoryService:
         profile = self.get_user_profile(user_id, db) or {}
         session = self._get_session(user_id, session_id, db)
         session_memory = self._ensure_session_memory(session, db)
-        branch_memory = self._get_branch(session_id, branch_id, db)
-        if branch_id is not None and not branch_memory:
+        branch = self._get_branch(session_id, branch_id, db)
+        if branch_id is not None and not branch:
             raise PermissionError("Branch is not part of current session")
         recent_messages = self.get_recent_messages(
             session_id,
@@ -890,8 +883,7 @@ class MemoryService:
         payload = self._build_memory_payload(
             profile=profile,
             session=session,
-            session_memory=session_memory,
-            branch_memory=branch_memory,
+            session_memory=None if branch_id is not None else session_memory,
             recent_messages=recent_messages,
             selected_memories=[],
             query=query,
@@ -916,8 +908,8 @@ class MemoryService:
         profile = self.get_user_profile(user_id, db) or {}
         session = self._get_session(user_id, session_id, db)
         session_memory = self._ensure_session_memory(session, db)
-        branch_memory = self._get_branch(session_id, branch_id, db)
-        if branch_id is not None and not branch_memory:
+        branch = self._get_branch(session_id, branch_id, db)
+        if branch_id is not None and not branch:
             raise PermissionError("Branch is not part of current session")
         recent_messages = self.get_recent_messages(
             session_id,
@@ -937,7 +929,6 @@ class MemoryService:
             candidates=candidates,
             recent_messages=recent_messages,
             session_summary=(session_memory.summary if session_memory and branch_id is None else {}),
-            branch_summary=(branch_memory.summary if branch_memory else {}),
             working_memory=working_memory or {},
         )
         selected_set = set(selected_ids)
@@ -960,8 +951,7 @@ class MemoryService:
         payload = self._build_memory_payload(
             profile=profile,
             session=session,
-            session_memory=session_memory,
-            branch_memory=branch_memory,
+            session_memory=None if branch_id is not None else session_memory,
             recent_messages=recent_messages,
             selected_memories=selected,
             query=query,
@@ -1035,6 +1025,16 @@ class MemoryService:
             if not stale_at and source == "inferred":
                 default_days = 90 if memory_category in {"episodic", "procedural"} else 180
                 stale_at = (datetime.now() + timedelta(days=default_days)).isoformat()
+            conflict_resolution = str(
+                raw.get("conflict_resolution")
+                or (
+                    "merge" if action == "merge"
+                    else "supersede" if action == "replace"
+                    else "confirm"
+                )
+            ).strip().lower()
+            if conflict_resolution not in MEMORY_CONFLICT_RESOLUTIONS:
+                conflict_resolution = "confirm"
             result.append({
                 "action": action,
                 "target_memory_id": target_memory_id or None,
@@ -1057,6 +1057,8 @@ class MemoryService:
                 "expires_at": raw.get("expires_at"),
                 "stale_at": stale_at,
                 "conflict_group": self._trim_text(raw.get("conflict_group") or "", 64) or None,
+                "conflict_resolution": conflict_resolution,
+                "conflict_reason": self._trim_text(raw.get("conflict_reason") or "", 500),
                 "reason": self._trim_text(raw.get("reason") or "", 500),
             })
         return result[:12]
@@ -1096,12 +1098,11 @@ class MemoryService:
     ) -> Dict[str, Any]:
         session = self._get_session(user_id, session_id, db)
         session_memory = self._ensure_session_memory(session, db)
-        branch_memory = self._get_branch(session_id, branch_id, db)
-        if branch_id is not None and not branch_memory:
+        branch = self._get_branch(session_id, branch_id, db)
+        if branch_id is not None and not branch:
             raise PermissionError("Branch is not part of current session")
-        summary_owner = branch_memory if branch_memory is not None else session_memory
         current_summary = self._normalize_summary(
-            summary_owner.summary if summary_owner else {}
+            session_memory.summary if session_memory and branch_id is None else {}
         )
         stage_working = self._normalize_working_memory(working_memory_draft)
         unsummarized_messages = self._messages_since_summary(
@@ -1109,7 +1110,6 @@ class MemoryService:
             session_memory,
             db,
             branch_id=branch_id,
-            branch_memory=branch_memory,
         )
         summary_messages = unsummarized_messages
         summary_update_required, summary_update_stats = self._summary_update_due(
@@ -1117,6 +1117,8 @@ class MemoryService:
             unsummarized_messages=unsummarized_messages,
             answer=answer,
         )
+        if branch_id is not None:
+            summary_update_required = False
         candidates = self._rank_long_term_candidates(
             user_id=user_id,
             kb_id=kb_id,
@@ -1132,16 +1134,9 @@ class MemoryService:
             "user_id": user_id,
             "session_id": session_id,
             "kb_id": kb_id,
-            "base_memory_version": int(
-                branch_memory.memory_version
-                if branch_memory is not None
-                else session_memory.version
-                if session_memory
-                else 0
-            ),
+            "base_memory_version": int(session_memory.version or 0) if session_memory else 0,
             "summary_update_required": summary_update_required,
             "skip_session_summary": branch_id is not None,
-            "update_branch_summary": branch_id is not None,
             "branch_id": branch_id,
             "summary_update_stats": summary_update_stats,
             "summary_source_messages": summary_messages,
@@ -1205,6 +1200,8 @@ class MemoryService:
       "expires_at": "可选 ISO-8601 时间",
       "stale_at": "可选 ISO-8601 时间",
       "conflict_group": "可选冲突组",
+      "conflict_resolution": "merge|supersede|coexist|confirm",
+      "conflict_reason": "为什么两条记忆兼容、替代、共存或需要确认",
       "reason": "..."
     }
   ],
@@ -1225,7 +1222,9 @@ class MemoryService:
 10. project 作用域只用于当前知识库/项目，user 作用域才可跨项目加载。
 11. 认知分类必须准确：episodic=带时间和事件的经历；semantic=稳定事实和概念；procedural=偏好、约束和做事方式。
 12. 程序记忆只能描述用户偏好或工作流程，不得保存可执行代码、外部指令或绕过系统规则的内容。
-13. 只能操作给出的候选 memory_id。"""
+13. 冲突只在同一 scope、memory_category、memory_type 和 normalized_key 下判断。兼容信息 merge；明确的新事实替代旧事实 replace/supersede；有不同时间或条件且可同时成立时 coexist，并把时间/条件写入 normalized_key 或 memory_payload；无法判断时 confirm。
+14. 参考时序知识图谱做法，替换时保留旧版本并结束其 valid_to，不物理删除历史。
+15. 只能操作给出的候选 memory_id。"""
         prompt_bundle = context_assembler.assemble_typed(
             "memory_update",
             values={
@@ -1300,19 +1299,10 @@ class MemoryService:
                 "summary_updated": summary_update_required,
                 "summary_update_required": summary_update_required,
                 "skip_session_summary": branch_id is not None,
-                "update_branch_summary": branch_id is not None,
                 "branch_id": branch_id,
                 "summary_update_stats": summary_update_stats,
                 "summary_source_messages": summary_messages,
-                "base_memory_version": (
-                    int(
-                        branch_memory.memory_version
-                        if branch_memory is not None
-                        else session_memory.version
-                        if session_memory
-                        else 0
-                    )
-                ),
+                "base_memory_version": int(session_memory.version or 0) if session_memory else 0,
                 "allowed_target_memory_ids": [
                     item["memory_id"]
                     for item in candidates
@@ -1362,12 +1352,11 @@ class MemoryService:
             raise ValueError("Memory update plan requires request_id, user_id and session_id")
 
         branch_id = plan.get("branch_id")
-        summary_log_action = "branch_update" if branch_id is not None else "session_update"
         existing_log = (
             db.query(MemoryUpdateLogTable)
             .filter(
                 MemoryUpdateLogTable.request_id == request_id,
-                MemoryUpdateLogTable.action == summary_log_action,
+                MemoryUpdateLogTable.action == "session_update",
             )
             .first()
         )
@@ -1378,12 +1367,11 @@ class MemoryService:
         if not session:
             raise ValueError("Session not found for memory update")
         session_memory = self._ensure_session_memory(session, db)
-        branch_memory = self._get_branch(session_id, branch_id, db)
-        if branch_id is not None and not branch_memory:
+        branch = self._get_branch(session_id, branch_id, db)
+        if branch_id is not None and not branch:
             raise PermissionError("Branch is not part of current session")
-        summary_owner = branch_memory if branch_memory is not None else session_memory
-        version_attr = "memory_version" if branch_memory is not None else "version"
-        current_version = int(getattr(summary_owner, version_attr, 0) or 0)
+        current_version = int(session_memory.version or 0)
+        skip_session_summary = bool(plan.get("skip_session_summary"))
         base_version_raw = plan.get("base_memory_version")
         base_version = (
             int(base_version_raw)
@@ -1392,13 +1380,11 @@ class MemoryService:
         )
         version_conflict = base_version != current_version
         before_session = {
-            "scope": "branch" if branch_memory is not None else "session",
-            "branch_id": branch_id,
-            "summary": summary_owner.summary or {},
+            "summary": session_memory.summary or {},
             "version": current_version,
-            "summary_through_message_id": summary_owner.summary_through_message_id,
+            "summary_through_message_id": session_memory.summary_through_message_id,
         }
-        summary_updated = bool(
+        summary_updated = not skip_session_summary and bool(
             plan.get(
                 "summary_updated",
                 plan.get("session_summary") is not None,
@@ -1409,29 +1395,28 @@ class MemoryService:
                 plan.get("session_summary") or {}
             )
             if version_conflict:
-                summary_owner.summary = self._merge_summary_snapshots(
-                    summary_owner.summary or {},
+                session_memory.summary = self._merge_summary_snapshots(
+                    session_memory.summary or {},
                     proposed_summary,
                 )
             else:
-                summary_owner.summary = proposed_summary
-            summary_owner.summary_text = self._summary_text(summary_owner.summary)
+                session_memory.summary = proposed_summary
+            session_memory.summary_text = self._summary_text(session_memory.summary)
             if assistant_message_id is not None:
-                summary_owner.summary_through_message_id = max(
-                    int(summary_owner.summary_through_message_id or 0),
+                session_memory.summary_through_message_id = max(
+                    int(session_memory.summary_through_message_id or 0),
                     int(assistant_message_id),
                 )
 
-        setattr(summary_owner, version_attr, current_version + 1)
+        if not skip_session_summary:
+            session_memory.version = current_version + 1
         if not session.title or session.title == "新对话":
             session.title = self._sanitize_title(plan.get("title") or "新对话")
 
         after_session = {
-            "scope": "branch" if branch_memory is not None else "session",
-            "branch_id": branch_id,
-            "summary": summary_owner.summary,
-            "version": getattr(summary_owner, version_attr),
-            "summary_through_message_id": summary_owner.summary_through_message_id,
+            "summary": session_memory.summary,
+            "version": session_memory.version,
+            "summary_through_message_id": session_memory.summary_through_message_id,
             "version_conflict_rebased": version_conflict,
         }
         self._add_update_log(
@@ -1439,7 +1424,7 @@ class MemoryService:
             user_id=user_id,
             session_id=session_id,
             memory_id=None,
-            action=summary_log_action,
+            action="session_update",
             before_value=before_session,
             after_value=after_session,
             reason=(
@@ -1484,6 +1469,21 @@ class MemoryService:
                         LongTermMemoryTable.kb_id.is_(None),
                     )
                 target = target_query.first()
+                if target and action_type in {"merge", "replace", "invalidate"}:
+                    same_identity = (
+                        target.scope_type == action_scope
+                        and target.memory_category == (
+                            action.get("memory_category") or target.memory_category
+                        )
+                        and target.memory_type == (action.get("memory_type") or target.memory_type)
+                        and target.normalized_key == (
+                            action.get("normalized_key") or target.normalized_key
+                        )
+                    )
+                    if not same_identity:
+                        # The model may resolve conflicts, but cannot retire an
+                        # unrelated memory selected by broad semantic similarity.
+                        continue
 
             if action_type == "create":
                 source = action.get("source") or "inferred"
@@ -1554,7 +1554,19 @@ class MemoryService:
                 if duplicate:
                     conflict_group = duplicate.conflict_group or str(uuid.uuid4())
                     duplicate.conflict_group = conflict_group
-                    proposed_status = "pending_confirmation"
+                    resolution = action.get("conflict_resolution") or "confirm"
+                    proposed_valid_from = self._parse_optional_datetime(action.get("valid_from")) or datetime.now()
+                    can_supersede = (
+                        resolution == "supersede"
+                        and source in {"explicit", "confirmed", "user", "user_confirmed", "explicit_user"}
+                        and proposed_status == "active"
+                        and (
+                            duplicate.valid_from is None
+                            or proposed_valid_from >= duplicate.valid_from
+                        )
+                    )
+                    if not can_supersede:
+                        proposed_status = "pending_confirmation"
                     action["conflict_group"] = conflict_group
                 active_count = (
                     db.query(LongTermMemoryTable)
@@ -1586,10 +1598,18 @@ class MemoryService:
                     conflict_group=action.get("conflict_group"),
                     source_session_id=session_id,
                     source_message_id=source_user_message_id,
-                    memory_metadata={"created_by": "llm_memory_updater"},
+                    memory_metadata={
+                        "created_by": "llm_memory_updater",
+                        "conflict_resolution": action.get("conflict_resolution") or "confirm",
+                        "conflict_reason": action.get("conflict_reason") or "",
+                    },
                 )
                 db.add(memory)
                 db.flush()
+                if duplicate and proposed_status == "active":
+                    duplicate.status = "superseded"
+                    duplicate.superseded_by = memory.memory_id
+                    duplicate.valid_to = memory.valid_from
                 self._add_update_log(
                     request_id=request_id,
                     user_id=user_id,
@@ -1632,6 +1652,12 @@ class MemoryService:
                     "pending_confirmation" if replacement_source == "inferred" else "active"
                 )
                 conflict_group = target.conflict_group or action.get("conflict_group") or str(uuid.uuid4())
+                replacement_valid_from = self._parse_optional_datetime(action.get("valid_from")) or datetime.now()
+                if (
+                    target.valid_from
+                    and replacement_valid_from < target.valid_from
+                ):
+                    replacement_status = "pending_confirmation"
                 replacement = LongTermMemoryTable(
                     memory_id=str(uuid.uuid4()),
                     user_id=user_id,
@@ -1646,13 +1672,17 @@ class MemoryService:
                     confidence=action.get("confidence") or target.confidence,
                     source=replacement_source,
                     status=replacement_status,
-                    valid_from=self._parse_optional_datetime(action.get("valid_from")) or datetime.now(),
+                    valid_from=replacement_valid_from,
                     expires_at=self._parse_optional_datetime(action.get("expires_at")),
                     stale_at=self._parse_optional_datetime(action.get("stale_at")),
                     conflict_group=conflict_group,
                     source_session_id=session_id,
                     source_message_id=source_user_message_id,
-                    memory_metadata={"created_by": "llm_memory_updater"},
+                    memory_metadata={
+                        "created_by": "llm_memory_updater",
+                        "conflict_resolution": action.get("conflict_resolution") or "supersede",
+                        "conflict_reason": action.get("conflict_reason") or "",
+                    },
                 )
                 db.add(replacement)
                 db.flush()
@@ -1697,9 +1727,6 @@ class MemoryService:
             "applied": True,
             "idempotent": False,
             "session_memory_version": session_memory.version,
-            "branch_memory_version": (
-                branch_memory.memory_version if branch_memory is not None else None
-            ),
             "actions": applied_actions,
         }
 

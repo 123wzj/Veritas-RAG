@@ -79,17 +79,6 @@ class TurnService:
             session_id=session_id,
             kb_id=kb_id,
         )
-        if branch_id is None and not created:
-            active_branch = (
-                db.query(ConversationBranchTable)
-                .filter(
-                    ConversationBranchTable.session_id == session.session_id,
-                    ConversationBranchTable.is_active == True,
-                )
-                .order_by(ConversationBranchTable.id.desc())
-                .first()
-            )
-            branch_id = active_branch.id if active_branch else None
         if branch_id is not None:
             branch = (
                 db.query(ConversationBranchTable)
@@ -101,6 +90,14 @@ class TurnService:
             )
             if not branch:
                 raise HTTPException(status_code=404, detail="Branch not found in session")
+            if branch.forked_session_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Branch is an independent session; use its session_id",
+                        "session_id": branch.forked_session_id,
+                    },
+                )
         if not created and int(session.message_count or 0) == 0 and (not session.title or session.title == "新对话"):
             session.title = self.title_from_query(query)
         existing = (

@@ -1,18 +1,36 @@
 # -*- coding: utf-8 -*-
-"""
-对话分支管理服务
-支持创建、切换、合并对话分支
+"""Independent conversation fork management.
+
+A fork copies messages and the safe session-summary snapshot into a new normal
+session. ConversationBranchTable records lineage only; online chat does not load
+branch-specific memory or implicitly switch a source session into a branch.
 """
 
-from typing import List, Dict, Any, Optional
+from __future__ import annotations
+
+import copy
+import uuid
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from sqlalchemy.orm import Session
 
-from backend.models.database.user import SessionTable, MessageTable, ConversationBranchTable
+from backend.models.database.user import (
+    ConversationBranchTable,
+    MessageTable,
+    SessionMemoryTable,
+    SessionTable,
+)
 
 
 class ConversationBranchService:
-    """对话分支管理服务"""
+    """Create immutable lineage records for independent forked sessions."""
+
+    @staticmethod
+    def _require_db(db: Optional[Session]) -> Session:
+        if db is None:
+            raise ValueError("Database session is required")
+        return db
 
     def create_branch(
         self,
@@ -20,71 +38,37 @@ class ConversationBranchService:
         branch_name: str,
         from_message_id: int,
         parent_branch_id: Optional[int] = None,
+        forked_session_id: Optional[str] = None,
         db: Session = None,
     ) -> ConversationBranchTable:
-        """
-        创建新的对话分支
-
-        Args:
-            session_id: 会话 ID
-            branch_name: 分支名称
-            from_message_id: 从哪条消息开始创建分支
-            parent_branch_id: 父分支 ID
-            db: 数据库会话
-
-        Returns:
-            新创建的分支
-        """
-        if not db:
-            raise ValueError("Database session is required")
-
-        # 验证会话存在
-        session = db.query(SessionTable).filter(
+        """Create a lineage record after the forked session is prepared."""
+        db = self._require_db(db)
+        source_session = db.query(SessionTable).filter(
             SessionTable.session_id == session_id
         ).first()
-
-        if not session:
-            raise ValueError(f"Session {session_id} not found")
-
-        # 验证消息存在
-        message = db.query(MessageTable).filter(
+        source_message = db.query(MessageTable).filter(
             MessageTable.id == from_message_id,
             MessageTable.session_id == session_id,
         ).first()
-
-        if not message:
+        if not source_session:
+            raise ValueError(f"Session {session_id} not found")
+        if not source_message:
             raise ValueError(f"Message {from_message_id} not found in session {session_id}")
-
-        # 如果没有指定父分支，使用当前活动分支
         if parent_branch_id is None:
-            active_branch = db.query(ConversationBranchTable).filter(
-                ConversationBranchTable.session_id == session_id,
-                ConversationBranchTable.is_active == True,
+            parent = db.query(ConversationBranchTable).filter(
+                ConversationBranchTable.forked_session_id == session_id
             ).first()
-
-            if active_branch:
-                parent_branch_id = active_branch.id
-
-        # A session has exactly one active branch. The API may omit branch_id
-        # and let TurnService resolve this active branch server-side.
-        db.query(ConversationBranchTable).filter(
-            ConversationBranchTable.session_id == session_id,
-            ConversationBranchTable.is_active == True,
-        ).update({"is_active": False}, synchronize_session=False)
-
-        # 创建新分支
+            parent_branch_id = parent.id if parent else None
         branch = ConversationBranchTable(
             session_id=session_id,
             branch_name=branch_name,
             parent_branch_id=parent_branch_id,
             parent_message_id=from_message_id,
-            is_active=True,
+            forked_session_id=forked_session_id,
+            is_active=False,
         )
-
         db.add(branch)
-        db.commit()
-        db.refresh(branch)
-
+        db.flush()
         return branch
 
     def list_branches(
@@ -92,118 +76,90 @@ class ConversationBranchService:
         session_id: str,
         db: Session = None,
     ) -> List[Dict[str, Any]]:
-        """
-        列出会话的所有分支
-
-        Args:
-            session_id: 会话 ID
-            db: 数据库会话
-
-        Returns:
-            分支列表
-        """
-        if not db:
-            raise ValueError("Database session is required")
-
+        db = self._require_db(db)
         branches = db.query(ConversationBranchTable).filter(
             ConversationBranchTable.session_id == session_id
         ).order_by(ConversationBranchTable.created_at).all()
-
         result = []
         for branch in branches:
-            # 获取分支消息数量
-            message_count = db.query(MessageTable).filter(
-                MessageTable.branch_id == branch.id
-            ).count()
-
+            message_count = 0
+            if branch.forked_session_id:
+                message_count = db.query(MessageTable).filter(
+                    MessageTable.session_id == branch.forked_session_id,
+                    MessageTable.branch_id.is_(None),
+                ).count()
             result.append({
                 "id": branch.id,
                 "branch_name": branch.branch_name,
                 "parent_branch_id": branch.parent_branch_id,
                 "parent_message_id": branch.parent_message_id,
-                "is_active": branch.is_active,
+                "forked_session_id": branch.forked_session_id,
+                "is_active": False,
                 "message_count": message_count,
-                "created_at": branch.created_at.isoformat(),
+                "created_at": branch.created_at.isoformat() if branch.created_at else None,
             })
-
         return result
 
-    def switch_branch(
-        self,
-        branch_id: int,
-        db: Session = None,
-    ) -> bool:
-        """
-        切换到指定分支
-
-        Args:
-            branch_id: 分支 ID
-            db: 数据库会话
-
-        Returns:
-            是否成功
-        """
-        if not db:
-            raise ValueError("Database session is required")
-
-        # 获取目标分支
+    def switch_branch(self, branch_id: int, db: Session = None) -> str:
+        """Return the independent session the client should navigate to."""
+        db = self._require_db(db)
         branch = db.query(ConversationBranchTable).filter(
             ConversationBranchTable.id == branch_id
         ).first()
-
         if not branch:
             raise ValueError(f"Branch {branch_id} not found")
+        if not branch.forked_session_id:
+            raise ValueError("Legacy branch has no independent session")
+        return branch.forked_session_id
 
-        # 取消当前活动分支
+    def delete_branch(self, branch_id: int, db: Session = None) -> bool:
+        db = self._require_db(db)
+        branch = db.query(ConversationBranchTable).filter(
+            ConversationBranchTable.id == branch_id
+        ).first()
+        if not branch:
+            raise ValueError(f"Branch {branch_id} not found")
+        forked_session_id = branch.forked_session_id
+
+        # Descendant forks remain valid independent sessions even when their
+        # lineage parent is removed. Detach them before deleting this record.
         db.query(ConversationBranchTable).filter(
-            ConversationBranchTable.session_id == branch.session_id,
-            ConversationBranchTable.is_active == True,
-        ).update({"is_active": False})
+            ConversationBranchTable.parent_branch_id == branch.id
+        ).update({"parent_branch_id": None}, synchronize_session=False)
 
-        # 激活目标分支
-        branch.is_active = True
-        db.commit()
-
-        return True
-
-    def delete_branch(
-        self,
-        branch_id: int,
-        db: Session = None,
-    ) -> bool:
-        """
-        删除分支及其消息
-
-        Args:
-            branch_id: 分支 ID
-            db: 数据库会话
-
-        Returns:
-            是否成功
-        """
-        if not db:
-            raise ValueError("Database session is required")
-
-        branch = db.query(ConversationBranchTable).filter(
-            ConversationBranchTable.id == branch_id
-        ).first()
-
-        if not branch:
-            raise ValueError(f"Branch {branch_id} not found")
-
-        # 不能删除活动分支
-        if branch.is_active:
-            raise ValueError("Cannot delete active branch")
-
-        # 删除分支的所有消息
-        db.query(MessageTable).filter(
-            MessageTable.branch_id == branch_id
-        ).delete()
-
-        # 删除分支
+        # The branch row references the forked session. Remove that reference
+        # before deleting the session so MySQL does not reject the operation.
+        branch.forked_session_id = None
+        db.flush()
         db.delete(branch)
-        db.commit()
+        db.flush()
 
+        if forked_session_id:
+            outgoing_branches = db.query(ConversationBranchTable).filter(
+                ConversationBranchTable.session_id == forked_session_id
+            ).all()
+            outgoing_ids = [item.id for item in outgoing_branches]
+            if outgoing_ids:
+                db.query(ConversationBranchTable).filter(
+                    ConversationBranchTable.parent_branch_id.in_(outgoing_ids)
+                ).update({"parent_branch_id": None}, synchronize_session=False)
+                db.query(MessageTable).filter(
+                    MessageTable.branch_id.in_(outgoing_ids)
+                ).update({"branch_id": None}, synchronize_session=False)
+            db.query(MessageTable).filter(
+                MessageTable.session_id == forked_session_id
+            ).delete(synchronize_session=False)
+            if outgoing_ids:
+                db.query(ConversationBranchTable).filter(
+                    ConversationBranchTable.id.in_(outgoing_ids)
+                ).delete(synchronize_session=False)
+            db.query(SessionMemoryTable).filter(
+                SessionMemoryTable.session_id == forked_session_id
+            ).delete(synchronize_session=False)
+            db.query(SessionTable).filter(
+                SessionTable.session_id == forked_session_id
+            ).delete(synchronize_session=False)
+        db.commit()
         return True
 
     def merge_branch(
@@ -212,67 +168,27 @@ class ConversationBranchService:
         target_branch_id: int,
         db: Session = None,
     ) -> bool:
-        """
-        合并分支到目标分支
-
-        Args:
-            source_branch_id: 源分支 ID
-            target_branch_id: 目标分支 ID
-            db: 数据库会话
-
-        Returns:
-            是否成功
-        """
-        if not db:
-            raise ValueError("Database session is required")
-
-        source_branch = db.query(ConversationBranchTable).filter(
-            ConversationBranchTable.id == source_branch_id
-        ).first()
-
-        target_branch = db.query(ConversationBranchTable).filter(
-            ConversationBranchTable.id == target_branch_id
-        ).first()
-
-        if not source_branch or not target_branch:
-            raise ValueError("Source or target branch not found")
-
-        if source_branch.session_id != target_branch.session_id:
-            raise ValueError("Cannot merge branches from different sessions")
-
-        # 将源分支的消息转移到目标分支
-        db.query(MessageTable).filter(
-            MessageTable.branch_id == source_branch_id
-        ).update({"branch_id": target_branch_id})
-
-        # 删除源分支
-        db.delete(source_branch)
-        db.commit()
-
-        return True
+        self._require_db(db)
+        raise ValueError(
+            "Independent session branches cannot be merged implicitly; "
+            "use an explicit semantic merge workflow"
+        )
 
     def get_branch_messages(
         self,
         branch_id: int,
         db: Session = None,
     ) -> List[Dict[str, Any]]:
-        """
-        获取分支的所有消息
-
-        Args:
-            branch_id: 分支 ID
-            db: 数据库会话
-
-        Returns:
-            消息列表
-        """
-        if not db:
-            raise ValueError("Database session is required")
-
+        db = self._require_db(db)
+        branch = db.query(ConversationBranchTable).filter(
+            ConversationBranchTable.id == branch_id
+        ).first()
+        if not branch or not branch.forked_session_id:
+            raise ValueError("Independent branch session not found")
         messages = db.query(MessageTable).filter(
-            MessageTable.branch_id == branch_id
-        ).order_by(MessageTable.created_at).all()
-
+            MessageTable.session_id == branch.forked_session_id,
+            MessageTable.branch_id.is_(None),
+        ).order_by(MessageTable.id).all()
         return [
             {
                 "id": msg.id,
@@ -280,7 +196,7 @@ class ConversationBranchService:
                 "content": msg.content,
                 "citations": msg.citations,
                 "token_count": msg.token_count,
-                "created_at": msg.created_at.isoformat(),
+                "created_at": msg.created_at.isoformat() if msg.created_at else None,
             }
             for msg in messages
         ]
@@ -292,64 +208,105 @@ class ConversationBranchService:
         branch_name: Optional[str] = None,
         db: Session = None,
     ) -> ConversationBranchTable:
-        """
-        从指定消息创建新分支
+        """Copy conversation state through a message into a new session."""
+        db = self._require_db(db)
+        branch_name = branch_name or f"分支 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        source_session = db.query(SessionTable).filter(
+            SessionTable.session_id == session_id
+        ).first()
+        from_message = db.query(MessageTable).filter(
+            MessageTable.id == from_message_id,
+            MessageTable.session_id == session_id,
+        ).first()
+        if not source_session or not from_message:
+            raise ValueError("Source session or message not found")
 
-        Args:
-            session_id: 会话 ID
-            from_message_id: 从哪条消息开始分支
-            branch_name: 分支名称
-            db: 数据库会话
+        source_branch_id = from_message.branch_id
+        messages_query = db.query(MessageTable).filter(
+            MessageTable.session_id == session_id,
+            MessageTable.id <= from_message.id,
+        )
+        messages_query = messages_query.filter(
+            MessageTable.branch_id == source_branch_id
+            if source_branch_id is not None
+            else MessageTable.branch_id.is_(None)
+        )
+        previous_messages = messages_query.order_by(MessageTable.id).all()
 
-        Returns:
-            新创建的分支
-        """
-        if not db:
-            raise ValueError("Database session is required")
+        forked_session_id = str(uuid.uuid4())
+        db.add(SessionTable(
+            session_id=forked_session_id,
+            user_id=source_session.user_id,
+            kb_id=source_session.kb_id,
+            title=branch_name,
+            summary=None,
+            context=copy.deepcopy(source_session.context or {}),
+            category=source_session.category,
+            archived=False,
+            message_count=len(previous_messages),
+        ))
+        db.flush()
 
-        # 生成默认分支名称
-        if not branch_name:
-            branch_name = f"分支 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        copied_message_ids: Dict[int, int] = {}
+        for message in previous_messages:
+            copied = MessageTable(
+                session_id=forked_session_id,
+                role=message.role,
+                content=message.content,
+                citations=copy.deepcopy(message.citations),
+                token_count=message.token_count,
+                request_id=None,
+                branch_id=None,
+            )
+            db.add(copied)
+            db.flush()
+            copied_message_ids[message.id] = copied.id
 
-        # 创建新分支
+        source_memory = db.query(SessionMemoryTable).filter(
+            SessionMemoryTable.session_id == session_id
+        ).first()
+        summary_is_safe = bool(
+            source_memory
+            and source_memory.summary_through_message_id
+            and source_memory.summary_through_message_id <= from_message_id
+            and source_memory.summary_through_message_id in copied_message_ids
+        )
+        if summary_is_safe:
+            summary = copy.deepcopy(source_memory.summary or {})
+            summary_text = source_memory.summary_text
+            copied_summary_cursor = copied_message_ids[
+                source_memory.summary_through_message_id
+            ]
+        else:
+            # A source summary that includes messages after the fork point must
+            # never leak future context into the independent session. The copied
+            # message history will be summarized normally on a later turn.
+            summary = {
+                "session_goal": branch_name,
+                "confirmed_decisions": [],
+                "discarded_ideas": [],
+                "open_questions": [],
+            }
+            summary_text = None
+            copied_summary_cursor = None
+        db.add(SessionMemoryTable(
+            session_id=forked_session_id,
+            summary=summary,
+            summary_text=summary_text,
+            summary_through_message_id=copied_summary_cursor,
+            version=1,
+        ))
+
         branch = self.create_branch(
             session_id=session_id,
             branch_name=branch_name,
             from_message_id=from_message_id,
+            forked_session_id=forked_session_id,
             db=db,
         )
-
-        # 复制该消息之前的所有消息到新分支
-        from_message = db.query(MessageTable).filter(
-            MessageTable.id == from_message_id
-        ).first()
-
-        if from_message:
-            # 获取该消息之前的所有消息
-            previous_messages = db.query(MessageTable).filter(
-                MessageTable.session_id == session_id,
-                MessageTable.id <= from_message.id,
-                MessageTable.branch_id == from_message.branch_id
-                if from_message.branch_id is not None
-                else MessageTable.branch_id.is_(None),
-            ).order_by(MessageTable.id.asc()).all()
-
-            # 复制消息到新分支
-            for msg in previous_messages:
-                new_msg = MessageTable(
-                    session_id=session_id,
-                    role=msg.role,
-                    content=msg.content,
-                    citations=msg.citations,
-                    token_count=msg.token_count,
-                    branch_id=branch.id,
-                )
-                db.add(new_msg)
-
-            db.commit()
-
+        db.commit()
+        db.refresh(branch)
         return branch
 
 
-# 全局分支服务实例
 branch_service = ConversationBranchService()

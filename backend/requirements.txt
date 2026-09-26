@@ -26,6 +26,8 @@ transformers>=4.44.2,<5
 
 # ========== LangGraph ==========
 langgraph>=0.0.20
+langgraph-checkpoint-sqlite>=3.0,<4.0
+aiosqlite>=0.20,<1.0
 
 # ========== Data Validation ==========
 pydantic>=2.5.0

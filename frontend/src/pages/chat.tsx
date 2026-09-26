@@ -140,8 +140,10 @@ export function ChatPage() {
         didBootstrapSelection.current = true
         if (!currentSession && mappedSessions.length > 0) store.setCurrentSession(mappedSessions[0])
       }
+      return mappedSessions
     } catch (error) {
       console.error("Failed to load sessions:", error)
+      return []
     }
   }
 
@@ -255,7 +257,117 @@ export function ChatPage() {
     event.stopPropagation()
     const lastMessage = [...session.messages].reverse().find((message) => message.id && /^\d+$/.test(message.id))
     if (!lastMessage) return
-    try { await userService.createBranch(session.session_id, Number(lastMessage.id), "方案分支"); } catch (error) { console.error("Failed to create branch:", error) }
+    try {
+      const branch = await userService.createBranch(
+        session.session_id,
+        Number(lastMessage.id),
+        "方案分支"
+      )
+      if (!branch.forked_session_id) return
+      const refreshed = await loadSessions()
+      const forkedSession = refreshed.find(
+        (item) => item.session_id === branch.forked_session_id
+      )
+      if (!forkedSession) return
+      setIsDraftMode(false)
+      setEditingTitle(false)
+      store.setCurrentSession(forkedSession)
+      const data = await userService.getSessionMessages(forkedSession.session_id)
+      store.setMessages(toChatMessages(data.messages))
+    } catch (error) {
+      console.error("Failed to create branch:", error)
+    }
+  }
+
+  const executeRagStream = async (
+    content: string,
+    workingSession: ChatSession,
+    requestId: string
+  ) => {
+    store.setStreaming(true)
+    store.setCurrentRequestId(requestId)
+
+    let answerContent = ""
+    let citations: any[] = []
+    try {
+      await ragService.queryStream(
+        {
+          query: content,
+          request_id: requestId,
+          session_id: workingSession.session_id,
+          web_enabled: webSearchEnabled,
+          kb_id: knowledgeSearchEnabled ? currentKbId ?? undefined : undefined,
+          stream: true,
+        },
+        (event: any) => {
+          if (thinkingEvents.has(event.event)) store.appendThinkingEventToLastMessage(event)
+          switch (event.event) {
+            case "answer.delta":
+              answerContent += event.data?.text || ""
+              store.updateLastMessage(answerContent, citations)
+              break
+            case "citation.delta":
+              citations = [...citations, event.data]
+              store.updateLastMessage(answerContent, citations)
+              break
+            case "answer.completed":
+              store.updateLastMessage(
+                event.data?.answer || answerContent,
+                event.data?.citations || citations,
+                { request_id: event.data?.request_id, resumable: false }
+              )
+              if (event.data?.request_id) {
+                void traceService.getSessionTrace(workingSession.session_id, event.data.request_id).then((trace) => {
+                  const run = trace.runs.find((item) => item.request_id === event.data.request_id)
+                  if (run) store.setLastMessageTrace(run)
+                }).catch(() => undefined)
+              }
+              store.setLastMessageThinkingCollapsed(true)
+              store.setStreaming(false)
+              store.setCurrentRequestId(null)
+              void Promise.all([loadSessions(), loadCategories()])
+              break
+            case "run.failed":
+              store.appendThinkingEventToLastMessage(event)
+              store.setLastMessageThinkingCollapsed(false)
+              store.updateLastMessage(
+                event.data?.resumable
+                  ? "本轮执行已中断，可使用同一 request_id 从失败节点恢复。"
+                  : "抱歉，查询失败，请稍后重试。",
+                [],
+                {
+                  request_id: event.data?.request_id || requestId,
+                  resumable: Boolean(event.data?.resumable),
+                }
+              )
+              store.setStreaming(false)
+              store.setCurrentRequestId(null)
+              break
+            default:
+              break
+          }
+        },
+        (error) => {
+          console.error("Query stream error:", error)
+          store.updateLastMessage(
+            "连接中断，可使用同一 request_id 从最近检查点恢复。",
+            [],
+            { request_id: requestId, resumable: true }
+          )
+          store.setStreaming(false)
+          store.setCurrentRequestId(null)
+        }
+      )
+    } catch (error) {
+      console.error("Query error:", error)
+      store.updateLastMessage(
+        "连接中断，可使用同一 request_id 从最近检查点恢复。",
+        [],
+        { request_id: requestId, resumable: true }
+      )
+      store.setStreaming(false)
+      store.setCurrentRequestId(null)
+    }
   }
 
   const handleSendMessage = async (content: string) => {
@@ -285,63 +397,20 @@ export function ChatPage() {
     store.setCurrentSession(workingSession)
     store.addMessage(ragService.createUserMessage(content))
     store.addMessage(ragService.createAssistantMessage())
-    store.setStreaming(true)
+    await executeRagStream(content, workingSession, crypto.randomUUID())
+  }
 
-    let answerContent = ""
-    let citations: any[] = []
-    try {
-      await ragService.queryStream(
-        {
-          query: content,
-          session_id: workingSession.session_id,
-          web_enabled: webSearchEnabled,
-          kb_id: knowledgeSearchEnabled ? currentKbId ?? undefined : undefined,
-          stream: true,
-        },
-        (event: any) => {
-          if (thinkingEvents.has(event.event)) store.appendThinkingEventToLastMessage(event)
-          switch (event.event) {
-            case "answer.delta":
-              answerContent += event.data?.text || ""
-              store.updateLastMessage(answerContent, citations)
-              break
-            case "citation.delta":
-              citations = [...citations, event.data]
-              store.updateLastMessage(answerContent, citations)
-              break
-            case "answer.completed":
-              store.updateLastMessage(event.data?.answer || answerContent, event.data?.citations || citations, { request_id: event.data?.request_id })
-              if (event.data?.request_id) {
-                void traceService.getSessionTrace(workingSession.session_id, event.data.request_id).then((trace) => {
-                  const run = trace.runs.find((item) => item.request_id === event.data.request_id)
-                  if (run) store.setLastMessageTrace(run)
-                }).catch(() => undefined)
-              }
-              store.setLastMessageThinkingCollapsed(true)
-              store.setStreaming(false)
-              void Promise.all([loadSessions(), loadCategories()])
-              break
-            case "run.failed":
-              store.appendThinkingEventToLastMessage(event)
-              store.setLastMessageThinkingCollapsed(false)
-              store.updateLastMessage("抱歉，查询失败，请稍后重试。", [])
-              store.setStreaming(false)
-              break
-            default:
-              break
-          }
-        },
-        (error) => {
-          console.error("Query stream error:", error)
-          store.updateLastMessage("抱歉，查询失败，请稍后重试。", [])
-          store.setStreaming(false)
-        }
-      )
-    } catch (error) {
-      console.error("Query error:", error)
-      store.updateLastMessage("抱歉，查询失败，请稍后重试。", [])
-      store.setStreaming(false)
-    }
+  const handleResumeMessage = async (messageIndex: number) => {
+    if (isStreaming || !currentSession) return
+    const assistantMessage = currentSession.messages[messageIndex]
+    const userMessage = currentSession.messages[messageIndex - 1]
+    const requestId = assistantMessage?.metadata?.request_id
+    if (!requestId || userMessage?.role !== "user") return
+    store.updateLastMessage("正在从最近检查点恢复…", [], {
+      request_id: requestId,
+      resumable: false,
+    })
+    await executeRagStream(userMessage.content, currentSession, requestId)
   }
 
   const filteredSessions = selectedCategory
@@ -523,8 +592,16 @@ export function ChatPage() {
             <ScrollArea className="min-h-0 flex-1 py-5">
               {visibleMessages.length ? (
                 <div className="flex flex-col gap-5 pb-4">
-                  {visibleMessages.map((message) => (
-                    <ChatMessage key={message.id} message={message} />
+                  {visibleMessages.map((message, index) => (
+                    <ChatMessage
+                      key={message.id}
+                      message={message}
+                      onResume={
+                        index === visibleMessages.length - 1 && message.metadata?.resumable
+                          ? () => void handleResumeMessage(index)
+                          : undefined
+                      }
+                    />
                   ))}
                 </div>
               ) : (

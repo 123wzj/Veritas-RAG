@@ -91,10 +91,13 @@ def _sync_legacy_schema() -> None:
     _ensure_column("long_term_memories", "stale_at", "`stale_at` DATETIME NULL")
     _ensure_column("long_term_memories", "deletion_tombstone", "`deletion_tombstone` TINYINT(1) NOT NULL DEFAULT 0")
     _ensure_column("long_term_memories", "embedding_ref", "`embedding_ref` VARCHAR(255) NULL")
-    _ensure_column("conversation_branches", "summary", "`summary` JSON NULL")
-    _ensure_column("conversation_branches", "summary_text", "`summary_text` TEXT NULL")
-    _ensure_column("conversation_branches", "summary_through_message_id", "`summary_through_message_id` INT NULL")
-    _ensure_column("conversation_branches", "memory_version", "`memory_version` INT NOT NULL DEFAULT 1")
+    _ensure_column("conversation_branches", "forked_session_id", "`forked_session_id` VARCHAR(64) NULL")
+    _ensure_index(
+        "conversation_branches",
+        "uq_conversation_branches_forked_session_id",
+        "CREATE UNIQUE INDEX `uq_conversation_branches_forked_session_id` "
+        "ON `conversation_branches` (`forked_session_id`)",
+    )
     _ensure_index(
         "long_term_memories",
         "ix_long_term_memory_category",

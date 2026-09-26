@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any, Literal
 class RAGQueryRequest(BaseModel):
     """RAG 查询请求模型"""
     query: str = Field(..., min_length=1, max_length=2000)
+    request_id: Optional[str] = Field(None, min_length=1, max_length=64)
     session_id: Optional[str] = None
     branch_id: Optional[int] = None
     kb_id: Optional[int] = None

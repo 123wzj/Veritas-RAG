@@ -12,6 +12,7 @@ from backend.core.config import settings
 from backend.db.mysql.connection import init_db, close_db
 from backend.db.redis.connection import redis_client
 from backend.db.chroma.connection import chroma_client
+from backend.agent.checkpoint import react_checkpoint_manager
 
 # 导入所有模型以确保 SQLAlchemy 能自动创建表
 from backend.models.database import user, knowledge
@@ -31,10 +32,12 @@ async def lifespan(app: FastAPI):
     # 启动时执行
     logger.info("Starting Veritas RAG...")
     init_db()
+    await react_checkpoint_manager.start()
     logger.info("Database initialized")
     yield
     # 关闭时执行
     logger.info("Shutting down Veritas RAG...")
+    await react_checkpoint_manager.close()
     close_db()
     redis_client.close()
     chroma_client.close()

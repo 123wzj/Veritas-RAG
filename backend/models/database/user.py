@@ -93,12 +93,14 @@ class ConversationBranchTable(Base):
     branch_name = Column(String(255), nullable=True)
     parent_branch_id = Column(Integer, ForeignKey("conversation_branches.id"), nullable=True, index=True)
     parent_message_id = Column(Integer, nullable=True, index=True)
-    # Branches inherit the session summary as read-only background, while this
-    # summary stores branch-local decisions and open questions.
-    summary = Column(JSON, nullable=True)
-    summary_text = Column(Text, nullable=True)
-    summary_through_message_id = Column(Integer, nullable=True)
-    memory_version = Column(Integer, default=1, nullable=False)
+    # A fork is an independent session.  This table only records lineage.
+    forked_session_id = Column(
+        String(64),
+        ForeignKey("sessions.session_id"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     is_active = Column(Boolean, default=True)
 

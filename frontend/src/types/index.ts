@@ -34,6 +34,7 @@ export interface SessionBranch {
   branch_name?: string | null
   parent_branch_id?: number | null
   parent_message_id?: number | null
+  forked_session_id?: string | null
   is_active: boolean
   created_at: string
 }
@@ -72,6 +73,7 @@ export interface Document {
 // ========== RAG 类型 ==========
 export interface RAGQueryRequest {
   query: string
+  request_id?: string
   session_id?: string
   branch_id?: number
   kb_id?: number
@@ -155,6 +157,7 @@ export interface ChatMessage {
     reasoning_summary?: string
     used_web_enhancement?: boolean
     request_id?: string
+    resumable?: boolean
     trace?: TraceRun
     memory_ids?: string[]
   }

@@ -9,6 +9,7 @@
 - `get_runtime_mode()` 固定返回 `react`，旧值或非法值不会使 API 回到旧图；
 - `backend/graph/` 不再被在线 Runtime 导入；
 - 新工具层、Evidence Ledger、Context Builder 和三层记忆均位于 ReAct 主链；
+- LangGraph 已接入 SQLite 持久化 Checkpointer，可按同一 `request_id` 从最近安全节点恢复；
 - 目标 MySQL 仍需执行正式迁移；
 - 生产认证、限流、可观测性和恢复能力仍需继续完善。
 
@@ -20,6 +21,7 @@
 backend/db/mysql/migrations/20260906_v15_acceptance.sql
 backend/db/mysql/migrations/20260926_react_runtime.sql
 backend/db/mysql/migrations/20260926_react_default.sql
+backend/db/mysql/migrations/20260926_independent_branches_and_checkpoints.sql
 ```
 
 迁移职责：
@@ -27,6 +29,7 @@ backend/db/mysql/migrations/20260926_react_default.sql
 - `20260906_v15_acceptance.sql`：V1.5 记忆、会话和 Trace 基础字段；
 - `20260926_react_runtime.sql`：ReAct Run 字段、长期记忆治理、Tool Call 与 Observation 表；
 - `20260926_react_default.sql`：将 `rag_runs.runtime_mode` 的数据库默认值改为 `react`。
+- `20260926_independent_branches_and_checkpoints.sql`：分支改为独立 Session 血缘，删除 Branch Summary 字段并增加唯一索引。Checkpoint 本体位于独立 SQLite 文件，不写入 MySQL。
 
 历史 Run 的 `runtime_mode` 保持原值，以保证审计准确性；只修改新记录的默认值。
 
@@ -51,6 +54,8 @@ AGENT_RUN_DEADLINE_MS
 AGENT_CONTEXT_PROFILE
 AGENT_CONTEXT_INPUT_TOKEN_LIMIT
 AGENT_OUTPUT_TOKEN_RESERVE
+AGENT_CHECKPOINT_PATH=data/langgraph/checkpoints.sqlite3
+MEMORY_LLM_SELECTION_ENABLED=false
 ```
 
 `AGENT_RUNTIME_MODE` 目前是兼容性配置。在线代码不会根据它分流，旧值会被归一化为 `react`。
@@ -64,7 +69,7 @@ AGENT_OUTPUT_TOKEN_RESERVE
 - Markdown 入库、父子分块和增量索引正常；
 - `knowledge_search` 与 `web_search` 只能通过 Tool Gateway 执行；
 - Evidence Ledger、引用和拒答正确；
-- 长对话、Session 和 Branch 隔离正确；
+- 长对话、普通 Session 和独立分叉 Session 隔离正确；
 - 长期记忆确认、冲突、过期和 Tombstone 正确；
 - Memory Update 只在答案完成验证后提交。
 
@@ -87,7 +92,7 @@ AGENT_OUTPUT_TOKEN_RESERVE
 | 拒答 | 无答案拒答率、可答问题误拒率 |
 | Agent | 平均迭代数、工具成功/空结果/重试率、无进展停止率 |
 | 记忆 | 选择准确率、错误写入率、冲突发现率、撤销率 |
-| 隔离 | 跨 User/Session/Branch/KB 泄漏必须为 0 |
+| 隔离 | 跨 User/Session/独立分叉/KB 泄漏必须为 0 |
 | 性能 | P50/P95 延迟、Token、单位请求成本 |
 | 稳定性 | Run 成功率、Provider 错误率、Deadline 超时率 |
 
@@ -121,6 +126,9 @@ AGENT_OUTPUT_TOKEN_RESERVE
 - [ ] 在线 Runtime 不导入 `backend.graph`；
 - [ ] 即使传入 `legacy` 或 `react_shadow`，测试仍进入 ReAct；
 - [ ] Session、Branch、KB ACL 自动化测试通过；
+- [ ] 相同 request_id 可恢复未完成 Checkpoint，已完成 Run 不重复执行；
+- [ ] 前端可在可恢复失败消息上复用原 request_id 继续执行；
+- [ ] 生产多实例部署已将 SQLite Checkpointer 迁移到 Postgres/MySQL Saver；
 - [ ] Tool Call 幂等唯一约束生效；
 - [ ] Trace API 只能读取当前用户数据；
 - [ ] SSE 事件与前端兼容；
@@ -129,4 +137,4 @@ AGENT_OUTPUT_TOKEN_RESERVE
 
 ## 8. 与 Checkpoint 的关系
 
-ReAct 已成为主框架，但节点级恢复仍未实现。如果未来加入写操作、MCP、多 Agent 或长任务，必须先实现 Checkpoint、重放策略、非幂等工具保护和人工确认。详细设计见《03-状态、追踪与失败恢复》。
+当前已实现单实例 SQLite Checkpointer。恢复会重跑失败节点本身，但已持久化 Tool Observation 可复用。未来加入写操作、MCP、多 Agent 或长任务前，还必须补齐非幂等工具保护、人工确认、补偿动作和多实例 Checkpoint 后端。详细边界见《03-状态、追踪与失败恢复》。

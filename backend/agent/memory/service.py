@@ -103,7 +103,6 @@ class ReactMemoryService:
             candidates=candidates,
             recent_messages=recent_messages,
             session_summary=session_memory.summary if session_memory else {},
-            branch_summary=branch.summary if branch else {},
             working_memory={},
         )
         selected_set = set(selected_ids)
@@ -113,7 +112,6 @@ class ReactMemoryService:
             profile=profile,
             session=session,
             session_memory=session_memory,
-            branch_memory=branch,
             recent_messages=recent_messages,
             selected_memories=selected,
             query=query,

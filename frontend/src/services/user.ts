@@ -124,7 +124,7 @@ export const userService = {
   async createBranch(sessionId: string, fromMessageId: number, branchName?: string): Promise<SessionBranch> {
     return apiClient.post(`/users/sessions/${sessionId}/branches?from_message_id=${fromMessageId}${branchName ? `&branch_name=${encodeURIComponent(branchName)}` : ""}`, {})
   },
-  async switchBranch(sessionId: string, branchId: number): Promise<{ message: string }> {
+  async switchBranch(sessionId: string, branchId: number): Promise<{ message: string; session_id: string }> {
     return apiClient.post(`/users/sessions/${sessionId}/branches/${branchId}/switch`, {})
   },
   async deleteBranch(sessionId: string, branchId: number): Promise<{ message: string }> {

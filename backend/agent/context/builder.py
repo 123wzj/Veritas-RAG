@@ -180,7 +180,6 @@ class ReactContextBuilder:
             ("latest_observations", "tool", self._latest_observations(observations), 6000, False),
             ("evidence_ledger", "evidence", self._ledger_summary(evidence_ledger), max(5000, total_budget // 2), False),
             ("session_summary", "memory", memory_context.get("session_summary") or {}, 2400, False),
-            ("branch_summary", "memory", memory_context.get("branch_summary") or {}, 2400, False),
             ("recent_messages", "conversation", memory_context.get("recent_messages") or [], 6000, False),
             ("long_term_memory", "memory", memory_context.get("long_term_memories") or [], 3200, False),
             ("profile", "memory", memory_context.get("profile") or {}, 1200, False),

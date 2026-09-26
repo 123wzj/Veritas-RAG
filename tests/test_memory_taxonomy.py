@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from backend.agent.context.builder import ReactContextBuilder
@@ -15,10 +15,16 @@ from backend.models.database.user import (
     SessionTable,
 )
 from backend.services.memory.memory_service import MemoryService
+from backend.services.chat.branch import ConversationBranchService
 
 
 def _database():
     engine = create_engine("sqlite:///:memory:")
+    event.listen(
+        engine,
+        "connect",
+        lambda connection, _record: connection.execute("PRAGMA foreign_keys=ON"),
+    )
     Base.metadata.create_all(
         engine,
         tables=[
@@ -53,49 +59,91 @@ def test_business_type_maps_to_cognitive_category_and_json_payload():
     assert datetime.fromisoformat(action["stale_at"]) > datetime.now()
 
 
-def test_branch_summary_updates_without_overwriting_session_summary():
+def test_fork_copies_messages_and_summary_into_independent_session():
     db = _database()
     try:
-        db.add(SessionTable(session_id="s1", user_id=1, title="新对话"))
-        branch = ConversationBranchTable(session_id="s1", branch_name="方案 A")
-        db.add(branch)
+        db.add(SessionTable(session_id="s1", user_id=1, title="主会话", message_count=2))
+        db.flush()
+        first = MessageTable(session_id="s1", role="user", content="问题", request_id="r1")
+        second = MessageTable(session_id="s1", role="assistant", content="回答", request_id="r1")
+        db.add_all([first, second])
         db.flush()
         db.add(
             SessionMemoryTable(
                 session_id="s1",
                 summary={"session_goal": "主会话", "confirmed_decisions": [], "discarded_ideas": [], "open_questions": []},
+                summary_through_message_id=second.id,
                 version=1,
             )
         )
         db.commit()
 
-        MemoryService().apply_memory_update_plan(
-            {
-                "request_id": "req-branch",
-                "user_id": 1,
-                "session_id": "s1",
-                "branch_id": branch.id,
-                "base_memory_version": 1,
-                "summary_updated": True,
-                "session_summary": {
-                    "session_goal": "分支方案 A",
-                    "confirmed_decisions": ["使用方案 A"],
-                    "discarded_ideas": [],
-                    "open_questions": [],
-                },
-                "long_term_actions": [],
-                "allowed_target_memory_ids": [],
-            },
+        branch = ConversationBranchService().fork_from_message(
+            session_id="s1",
+            from_message_id=second.id,
+            branch_name="方案 A",
             db=db,
         )
 
+        assert branch.forked_session_id != "s1"
+        copied_messages = db.query(MessageTable).filter_by(
+            session_id=branch.forked_session_id
+        ).order_by(MessageTable.id).all()
+        copied_memory = db.query(SessionMemoryTable).filter_by(
+            session_id=branch.forked_session_id
+        ).one()
+        source_memory = db.query(SessionMemoryTable).filter_by(session_id="s1").one()
+        assert [item.content for item in copied_messages] == ["问题", "回答"]
+        assert all(item.branch_id is None for item in copied_messages)
+        assert copied_memory.summary == source_memory.summary
+        assert copied_memory.summary_through_message_id == copied_messages[-1].id
+    finally:
+        db.close()
+
+
+def test_deleting_fork_removes_its_session_but_preserves_descendant_session():
+    db = _database()
+    service = ConversationBranchService()
+    try:
+        db.add(SessionTable(session_id="s1", user_id=1, title="主会话"))
         db.flush()
-        db.refresh(branch)
-        session_memory = db.query(SessionMemoryTable).filter_by(session_id="s1").one()
-        assert branch.summary["session_goal"] == "分支方案 A"
-        assert branch.memory_version == 2
-        assert session_memory.summary["session_goal"] == "主会话"
-        assert session_memory.version == 1
+        root_message = MessageTable(
+            session_id="s1", role="user", content="根消息", request_id="root"
+        )
+        db.add(root_message)
+        db.flush()
+        db.add(SessionMemoryTable(session_id="s1", summary={}, version=1))
+        db.commit()
+
+        first_fork = service.fork_from_message(
+            session_id="s1",
+            from_message_id=root_message.id,
+            branch_name="第一层",
+            db=db,
+        )
+        first_fork_session_id = first_fork.forked_session_id
+        copied_message = db.query(MessageTable).filter_by(
+            session_id=first_fork_session_id
+        ).one()
+        second_fork = service.fork_from_message(
+            session_id=first_fork_session_id,
+            from_message_id=copied_message.id,
+            branch_name="第二层",
+            db=db,
+        )
+        second_fork_id = second_fork.id
+        descendant_session_id = second_fork.forked_session_id
+
+        assert service.delete_branch(first_fork.id, db=db) is True
+        assert db.query(SessionTable).filter_by(
+            session_id=first_fork_session_id
+        ).first() is None
+        assert db.query(SessionTable).filter_by(
+            session_id=descendant_session_id
+        ).one().title == "第二层"
+        assert db.query(ConversationBranchTable).filter_by(
+            id=second_fork_id
+        ).first() is None
     finally:
         db.close()
 

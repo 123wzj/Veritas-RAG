@@ -43,6 +43,7 @@ async def _generate_sse_from_graph(
     session_id: str | None,
     top_k: int | None,
     branch_id: int | None = None,
+    request_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     logger.info(
@@ -56,7 +57,7 @@ async def _generate_sse_from_graph(
     db: Session | None = next(get_db_func())
     resolved_session_id: str | None = session_id
     resolved_branch_id: int | None = branch_id
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     runtime_mode = get_runtime_mode()
 
     try:
@@ -133,9 +134,10 @@ async def _generate_sse_from_graph(
                     memory_update_plan = state["memory_update_plan"]
 
                 if state.get("error"):
+                    resumable = bool(state.get("resumable"))
                     error_db = next(get_db_func())
                     try:
-                        trace_service.finish_run(error_db, request_id=request_id, final_status="failed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), reflection_count=int(final_state.get("reflection_count") or 0), error=str(state["error"]))
+                        trace_service.finish_run(error_db, request_id=request_id, final_status="interrupted" if resumable else "failed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), reflection_count=int(final_state.get("reflection_count") or 0), stop_reason=state.get("stop_reason"), error=str(state["error"]))
                         error_db.commit()
                     finally:
                         error_db.close()
@@ -145,6 +147,9 @@ async def _generate_sse_from_graph(
                             "data": {
                                 "error": state["error"],
                                 "session_id": resolved_session_id,
+                                "request_id": request_id,
+                                "resumable": resumable,
+                                "stop_reason": state.get("stop_reason"),
                             },
                         }
                     )
@@ -312,6 +317,7 @@ async def query_rag_stream(
                 session_id=request.session_id,
                 top_k=request.top_k,
                 branch_id=request.branch_id,
+                request_id=request.request_id,
             ),
             media_type="text/event-stream",
         )
@@ -337,6 +343,7 @@ async def query_rag(
         session_id=request.session_id,
         top_k=request.top_k,
         branch_id=request.branch_id,
+        request_id=request.request_id,
     ):
         lines = chunk.strip().split("\n")
         event_type = None

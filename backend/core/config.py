@@ -129,6 +129,7 @@ class Settings(BaseSettings):
     AGENT_CONTEXT_INPUT_TOKEN_LIMIT: int = 32000
     AGENT_OUTPUT_TOKEN_RESERVE: int = 8192
     AGENT_RUN_DEADLINE_MS: int = 120000
+    AGENT_CHECKPOINT_PATH: str = "data/langgraph/checkpoints.sqlite3"
 
     # Context engineering and memory budgets.
     CONTEXT_INPUT_TOKEN_BUDGET: int = 7000
@@ -140,7 +141,9 @@ class Settings(BaseSettings):
     CONTEXT_EVIDENCE_TOKEN_BUDGET: int = 3200
     MEMORY_LONG_TERM_CANDIDATE_LIMIT: int = 20
     MEMORY_LONG_TERM_TOP_K: int = 6
-    MEMORY_LLM_SELECTION_ENABLED: bool = True
+    # V1.5 uses deterministic keyword recall only. Keep the optional selector
+    # disabled until memory retrieval evaluation justifies another stage.
+    MEMORY_LLM_SELECTION_ENABLED: bool = False
     MEMORY_LLM_UPDATE_ENABLED: bool = True
     MEMORY_MAX_ACTIVE_PER_USER: int = 200
     MEMORY_SUMMARY_UPDATE_MIN_NEW_TURNS: int = 2
@@ -198,6 +201,7 @@ class Settings(BaseSettings):
     def model_post_init(self, __context) -> None:
         self.CHROMA_PERSIST_DIR = _resolve_project_path(self.CHROMA_PERSIST_DIR)
         self.UPLOAD_DIR = _resolve_project_path(self.UPLOAD_DIR)
+        self.AGENT_CHECKPOINT_PATH = _resolve_project_path(self.AGENT_CHECKPOINT_PATH)
         # All chat/reasoning tasks use DeepSeek through langchain-deepseek.
         self.LLM_PROVIDER = "deepseek"
         self.LLM_MODEL = "deepseek-v4-flash"

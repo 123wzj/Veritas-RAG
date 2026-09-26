@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, AsyncGenerator, Dict, Optional
 
-from backend.agent.graph import react_graph
+from backend.agent.checkpoint import react_checkpoint_manager
 from backend.agent.schemas import RuntimeBudget
 from backend.agent.state import create_agent_state
 from backend.core.config import settings
@@ -15,6 +15,23 @@ REACT_RUNTIME_MODE = "react"
 GRAPH_RUN_CONFIG = {
     "recursion_limit": max(25, settings.GRAPH_RECURSION_LIMIT),
 }
+# Test-only override. Production obtains the persistently compiled graph from
+# react_checkpoint_manager.
+react_graph = None
+
+
+async def _get_runtime_graph():
+    return react_graph or await react_checkpoint_manager.get_graph()
+
+
+def _run_config(*, user_id: int, request_id: str) -> Dict[str, Any]:
+    return {
+        **GRAPH_RUN_CONFIG,
+        "configurable": {
+            "thread_id": f"user:{user_id}:run:{request_id}",
+            "checkpoint_ns": "react",
+        },
+    }
 
 
 def get_runtime_mode(_override: Optional[str] = None) -> str:
@@ -101,11 +118,25 @@ async def run_rag_runtime(
         branch_id=branch_id,
     )
     timeout = max(1.0, build_runtime_budget().deadline_ms / 1000.0)
+    graph = await _get_runtime_graph()
+    run_config = _run_config(user_id=user_id, request_id=request_id)
+    graph_input: Optional[Dict[str, Any]] = react_state
+    if hasattr(graph, "aget_state"):
+        snapshot = await graph.aget_state(run_config)
+        if snapshot and getattr(snapshot, "values", None):
+            values = dict(snapshot.values or {})
+            if getattr(snapshot, "next", ()):
+                # Passing None resumes from the next unfinished node. Completed
+                # node writes are not repeated by LangGraph durable execution.
+                graph_input = None
+            elif values.get("final_answer") or values.get("error"):
+                yield {"checkpoint": values}
+                return
 
     if stream_events:
-        iterator = react_graph.astream(
-            react_state,
-            config=GRAPH_RUN_CONFIG,
+        iterator = graph.astream(
+            graph_input,
+            config=run_config,
         ).__aiter__()
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
@@ -115,6 +146,8 @@ async def run_rag_runtime(
                     "runtime": {
                         "error": "react runtime deadline exceeded",
                         "stop_reason": "deadline_exceeded",
+                        "request_id": request_id,
+                        "resumable": True,
                     }
                 }
                 return
@@ -127,6 +160,18 @@ async def run_rag_runtime(
                     "runtime": {
                         "error": "react runtime deadline exceeded",
                         "stop_reason": "deadline_exceeded",
+                        "request_id": request_id,
+                        "resumable": True,
+                    }
+                }
+                return
+            except Exception as exc:
+                yield {
+                    "runtime": {
+                        "error": f"react runtime interrupted: {exc}",
+                        "stop_reason": "checkpoint_resumable_failure",
+                        "request_id": request_id,
+                        "resumable": True,
                     }
                 }
                 return
@@ -135,13 +180,22 @@ async def run_rag_runtime(
 
     try:
         yield await asyncio.wait_for(
-            react_graph.ainvoke(react_state, config=GRAPH_RUN_CONFIG),
+            graph.ainvoke(graph_input, config=run_config),
             timeout=timeout,
         )
     except asyncio.TimeoutError:
         yield {
             "error": "react runtime deadline exceeded",
             "stop_reason": "deadline_exceeded",
+            "request_id": request_id,
+            "resumable": True,
+        }
+    except Exception as exc:
+        yield {
+            "error": f"react runtime interrupted: {exc}",
+            "stop_reason": "checkpoint_resumable_failure",
+            "request_id": request_id,
+            "resumable": True,
         }
 
 

@@ -110,7 +110,7 @@ class MemoryContextEngineeringTest(unittest.TestCase):
         # V1.5 deliberately maps the compatibility "pro" tier to Flash.
         self.assertEqual(get_llm("pro").model_name, "deepseek-v4-flash")
 
-    def test_turn_service_uses_active_branch_when_request_omits_branch_id(self):
+    def test_turn_service_does_not_implicitly_load_a_branch(self):
         branch = ConversationBranchTable(
             session_id="session-1",
             branch_name="active",
@@ -126,8 +126,8 @@ class MemoryContextEngineeringTest(unittest.TestCase):
             request_id="branch-turn",
             query="continue branch",
         )
-        self.assertEqual(turn["branch_id"], branch.id)
-        self.assertEqual(turn["message"].branch_id, branch.id)
+        self.assertIsNone(turn["branch_id"])
+        self.assertIsNone(turn["message"].branch_id)
 
     def test_context_assembler_respects_total_budget(self):
         assembler = ContextAssembler()
@@ -404,11 +404,13 @@ class MemoryContextEngineeringTest(unittest.TestCase):
         ]
         original_get_llm = memory_module.get_llm
         original_key = settings.LLM_API_KEY
+        original_selection_enabled = settings.MEMORY_LLM_SELECTION_ENABLED
         memory_module.get_llm = lambda *_args, **_kwargs: _FakeLLM({
             "selected_memory_ids": ["m2", "unknown"],
             "reason": "当前问题询问项目数据库约束",
         })
         settings.LLM_API_KEY = "test-key"
+        settings.MEMORY_LLM_SELECTION_ENABLED = True
         try:
             selected = asyncio.run(self.service._llm_select_long_term_memories(
                 query="这个项目数据库怎么选？",
@@ -418,6 +420,7 @@ class MemoryContextEngineeringTest(unittest.TestCase):
         finally:
             memory_module.get_llm = original_get_llm
             settings.LLM_API_KEY = original_key
+            settings.MEMORY_LLM_SELECTION_ENABLED = original_selection_enabled
 
         self.assertEqual(selected, ["m2"])
 

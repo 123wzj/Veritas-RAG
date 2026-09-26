@@ -116,11 +116,7 @@ async def decide(state: AgentState) -> Dict[str, Any]:
             "latency_breakdown_ms": {**state.get("latency_breakdown_ms", {}), f"react.decide.{state.get('iteration', 0)}": latency},
         }
     except Exception as exc:
-        return {
-            "error": f"agent_decision_failed: {exc}",
-            "stop_reason": "controller_error",
-            "events": [*state.get("events", []), _event("agent.failed", {"stage": "decide", "error": str(exc)})],
-        }
+        raise RuntimeError(f"agent_decision_failed: {exc}") from exc
 
 
 async def execute_tools(state: AgentState) -> Dict[str, Any]:
@@ -343,7 +339,7 @@ def route_after_verify(state: AgentState) -> Literal["decide", "memory", "end"]:
     return "memory"
 
 
-def create_react_graph():
+def create_react_graph(*, checkpointer=None):
     workflow = StateGraph(AgentState)
     workflow.add_node("hydrate_context", hydrate_context)
     workflow.add_node("decide", decide)
@@ -364,7 +360,7 @@ def create_react_graph():
         "decide": "decide", "memory": "memory", "end": END,
     })
     workflow.add_edge("memory", END)
-    return workflow.compile()
+    return workflow.compile(checkpointer=checkpointer)
 
 
 react_graph = create_react_graph()

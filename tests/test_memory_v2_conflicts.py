@@ -4,7 +4,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.db.mysql.connection import Base
-from backend.models.database.user import LongTermMemoryTable
+from backend.models.database.user import (
+    LongTermMemoryTable,
+    MemoryUpdateLogTable,
+    SessionMemoryTable,
+    SessionTable,
+)
 from backend.services.memory.memory_service import MemoryService
 
 
@@ -68,3 +73,140 @@ def test_project_memory_never_crosses_kb_scope():
     assert "project-7" in ids
     assert "project-8" not in ids
     db.close()
+
+
+def _conflict_database():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[
+        SessionTable.__table__,
+        SessionMemoryTable.__table__,
+        LongTermMemoryTable.__table__,
+        MemoryUpdateLogTable.__table__,
+    ])
+    db = sessionmaker(bind=engine)()
+    db.add(SessionTable(session_id="s1", user_id=1, title="冲突测试"))
+    db.commit()
+    return db
+
+
+def _replacement_plan(*, request_id, target_id, normalized_key, source, category="procedural"):
+    return {
+        "request_id": request_id,
+        "user_id": 1,
+        "session_id": "s1",
+        "kb_id": None,
+        "summary_updated": False,
+        "long_term_actions": [{
+            "action": "replace",
+            "target_memory_id": target_id,
+            "scope_type": "user",
+            "memory_category": category,
+            "memory_type": "user_preference",
+            "content": "用户现在偏好简短回答",
+            "normalized_key": normalized_key,
+            "keywords": ["简短回答"],
+            "confidence": 0.95,
+            "source": source,
+            "status": "active" if source == "explicit" else "pending_confirmation",
+            "conflict_resolution": "supersede",
+            "conflict_reason": "用户表达了新的回答风格",
+        }],
+        "allowed_target_memory_ids": [target_id],
+        "reason": "conflict test",
+    }
+
+
+def test_conflict_guard_cannot_replace_unrelated_normalized_key():
+    db = _conflict_database()
+    try:
+        db.add(LongTermMemoryTable(
+            memory_id="old", user_id=1, scope_type="user",
+            memory_category="procedural", memory_type="user_preference",
+            content="用户偏好详细回答", normalized_key="answer_style",
+            keywords=["详细回答"], confidence=0.9, source="confirmed",
+            status="active", valid_from=datetime.now() - timedelta(days=1),
+        ))
+        db.commit()
+        result = MemoryService().apply_memory_update_plan(
+            _replacement_plan(
+                request_id="unrelated",
+                target_id="old",
+                normalized_key="response_language",
+                source="explicit",
+            ),
+            db=db,
+        )
+        db.commit()
+        old = db.query(LongTermMemoryTable).filter_by(memory_id="old").one()
+        assert result["actions"] == []
+        assert old.status == "active"
+        assert db.query(LongTermMemoryTable).count() == 1
+    finally:
+        db.close()
+
+
+def test_explicit_newer_memory_supersedes_old_version_but_keeps_history():
+    db = _conflict_database()
+    try:
+        db.add(LongTermMemoryTable(
+            memory_id="old", user_id=1, scope_type="user",
+            memory_category="procedural", memory_type="user_preference",
+            content="用户偏好详细回答", normalized_key="answer_style",
+            keywords=["详细回答"], confidence=0.9, source="confirmed",
+            status="active", valid_from=datetime.now() - timedelta(days=1),
+        ))
+        db.commit()
+        result = MemoryService().apply_memory_update_plan(
+            _replacement_plan(
+                request_id="explicit-supersede",
+                target_id="old",
+                normalized_key="answer_style",
+                source="explicit",
+            ),
+            db=db,
+        )
+        db.commit()
+        old = db.query(LongTermMemoryTable).filter_by(memory_id="old").one()
+        replacement_id = result["actions"][0]["replacement_memory_id"]
+        replacement = db.query(LongTermMemoryTable).filter_by(
+            memory_id=replacement_id
+        ).one()
+        assert old.status == "superseded"
+        assert old.valid_to is not None
+        assert old.superseded_by == replacement.memory_id
+        assert replacement.status == "active"
+    finally:
+        db.close()
+
+
+def test_inferred_conflict_waits_for_user_confirmation():
+    db = _conflict_database()
+    try:
+        db.add(LongTermMemoryTable(
+            memory_id="old", user_id=1, scope_type="user",
+            memory_category="procedural", memory_type="user_preference",
+            content="用户偏好详细回答", normalized_key="answer_style",
+            keywords=["详细回答"], confidence=0.9, source="confirmed",
+            status="active", valid_from=datetime.now() - timedelta(days=1),
+        ))
+        db.commit()
+        result = MemoryService().apply_memory_update_plan(
+            _replacement_plan(
+                request_id="inferred-confirm",
+                target_id="old",
+                normalized_key="answer_style",
+                source="inferred",
+            ),
+            db=db,
+        )
+        db.commit()
+        old = db.query(LongTermMemoryTable).filter_by(memory_id="old").one()
+        replacement_id = result["actions"][0]["replacement_memory_id"]
+        replacement = db.query(LongTermMemoryTable).filter_by(
+            memory_id=replacement_id
+        ).one()
+        assert old.status == "active"
+        assert old.superseded_by is None
+        assert replacement.status == "pending_confirmation"
+    finally:
+        db.close()
