@@ -83,12 +83,24 @@ def _sync_legacy_schema() -> None:
     _ensure_column("user_profiles", "working_preferences", "`working_preferences` JSON NULL")
 
     _ensure_column("long_term_memories", "source", "`source` VARCHAR(30) NOT NULL DEFAULT 'inferred'")
+    _ensure_column("long_term_memories", "memory_category", "`memory_category` VARCHAR(20) NOT NULL DEFAULT 'semantic'")
+    _ensure_column("long_term_memories", "memory_payload", "`memory_payload` JSON NULL")
     _ensure_column("long_term_memories", "last_confirmed_at", "`last_confirmed_at` DATETIME NULL")
     _ensure_column("long_term_memories", "expires_at", "`expires_at` DATETIME NULL")
     _ensure_column("long_term_memories", "conflict_group", "`conflict_group` VARCHAR(64) NULL")
     _ensure_column("long_term_memories", "stale_at", "`stale_at` DATETIME NULL")
     _ensure_column("long_term_memories", "deletion_tombstone", "`deletion_tombstone` TINYINT(1) NOT NULL DEFAULT 0")
     _ensure_column("long_term_memories", "embedding_ref", "`embedding_ref` VARCHAR(255) NULL")
+    _ensure_column("conversation_branches", "summary", "`summary` JSON NULL")
+    _ensure_column("conversation_branches", "summary_text", "`summary_text` TEXT NULL")
+    _ensure_column("conversation_branches", "summary_through_message_id", "`summary_through_message_id` INT NULL")
+    _ensure_column("conversation_branches", "memory_version", "`memory_version` INT NOT NULL DEFAULT 1")
+    _ensure_index(
+        "long_term_memories",
+        "ix_long_term_memory_category",
+        "CREATE INDEX `ix_long_term_memory_category` "
+        "ON `long_term_memories` (`user_id`, `memory_category`, `status`)",
+    )
     _ensure_column("answer_feedback", "updated_at", "`updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
 
     _ensure_column("rag_runs", "runtime_mode", "`runtime_mode` VARCHAR(30) NOT NULL DEFAULT 'react'")

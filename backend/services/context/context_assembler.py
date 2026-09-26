@@ -35,6 +35,7 @@ PROMPT_POLICIES: Dict[str, Dict[str, Any]] = {
         "sections": [
             "query",
             "session_summary",
+            "branch_summary",
             "recent_messages",
             "profile",
         ],
@@ -57,6 +58,7 @@ PROMPT_POLICIES: Dict[str, Dict[str, Any]] = {
             "candidate_memories",
             "working_memory",
             "session_summary",
+            "branch_summary",
             "recent_messages",
             "supplemental_context",
         ],
@@ -75,6 +77,7 @@ PROMPT_POLICIES: Dict[str, Dict[str, Any]] = {
             "evidence",
             "working_memory",
             "session_summary",
+            "branch_summary",
         ],
         "budget": 4600,
     },
@@ -86,6 +89,7 @@ PROMPT_POLICIES: Dict[str, Dict[str, Any]] = {
             "evidence",
             "working_memory",
             "session_summary",
+            "branch_summary",
             "recent_messages",
             "long_term_memories",
             "profile",
@@ -125,6 +129,7 @@ SECTION_LABELS = {
     "answer": "当前回答",
     "recent_messages": "最近对话原文",
     "session_summary": "会话摘要",
+    "branch_summary": "当前分支摘要",
     "previous_summary": "上一次会话摘要",
     "working_memory": "当前工作记忆",
     "long_term_memories": "相关长期记忆",
@@ -222,8 +227,14 @@ class ContextAssembler:
                 continue
             memory_id = str(memory.get("memory_id") or "")
             memory_type = memory.get("memory_type") or "memory"
+            memory_category = memory.get("memory_category") or "semantic"
             scope_type = memory.get("scope_type") or "user"
-            row = f"[{memory_id}] ({scope_type}/{memory_type}) {content}"
+            usage = str(memory.get("usage_instruction") or "").strip()
+            row = (
+                f"[{memory_id}] ({scope_type}/{memory_category}/{memory_type}) "
+                f"{content}"
+                + (f"；使用规则：{usage}" if usage else "")
+            )
             key = row.casefold()
             if key in seen:
                 continue
@@ -265,6 +276,7 @@ class ContextAssembler:
             "answer": 1600,
             "recent_messages": settings.CONTEXT_RECENT_TOKEN_BUDGET,
             "session_summary": settings.CONTEXT_SESSION_SUMMARY_TOKEN_BUDGET,
+            "branch_summary": settings.CONTEXT_SESSION_SUMMARY_TOKEN_BUDGET,
             "previous_summary": max(
                 settings.CONTEXT_SESSION_SUMMARY_TOKEN_BUDGET,
                 1800,
@@ -457,6 +469,7 @@ class ContextAssembler:
         query: str,
         recent_messages: Optional[List[Dict[str, Any]]] = None,
         session_summary: Any = None,
+        branch_summary: Any = None,
         working_memory: Any = None,
         long_term_memories: Optional[List[Dict[str, Any]]] = None,
         evidence: Optional[List[Dict[str, Any]]] = None,
@@ -468,6 +481,7 @@ class ContextAssembler:
             "query": query if include_query else "",
             "recent_messages": recent_messages or [],
             "session_summary": session_summary,
+            "branch_summary": branch_summary,
             "working_memory": working_memory,
             "long_term_memories": long_term_memories or [],
             "evidence": evidence or [],

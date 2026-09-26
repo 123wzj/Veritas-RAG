@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
 MemoryStatus = Literal["active", "pending_confirmation", "rejected", "inactive", "deleted", "superseded"]
 MemoryType = Literal["profile", "preference", "constraint", "project_state", "user_profile", "project_context", "project_decision"]
+MemoryCategory = Literal["episodic", "semantic", "procedural"]
 ScopeType = Literal["user", "project"]
 MemorySource = Literal["explicit_user", "user_confirmed", "inferred", "imported", "system"]
 
@@ -23,8 +24,11 @@ class LongTermMemoryResponse(BaseModel):
     memory_id: str
     user_id: int
     kb_id: Optional[int] = None
+    memory_category: MemoryCategory = "semantic"
     memory_type: str
     content: str
+    memory_payload: dict[str, Any] = Field(default_factory=dict)
+    usage_instruction: str = ""
     scope_type: str
     source: str
     confidence: float

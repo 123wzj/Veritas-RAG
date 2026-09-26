@@ -27,6 +27,10 @@ class WorkingMemoryV2(BaseModel):
     answer_slots: List[AnswerSlot] = Field(default_factory=list)
     constraints: List[str] = Field(default_factory=list)
     active_entities: List[str] = Field(default_factory=list)
+    known_facts: List[str] = Field(default_factory=list)
+    assumptions: List[str] = Field(default_factory=list)
+    required_sources: List[str] = Field(default_factory=list)
+    user_expectations: List[str] = Field(default_factory=list)
     attempted_actions: List[Dict[str, Any]] = Field(default_factory=list)
     unresolved_slots: List[str] = Field(default_factory=list)
     current_focus: str = ""

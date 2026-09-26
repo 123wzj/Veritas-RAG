@@ -137,6 +137,7 @@ async def delete_session_memory(
 async def list_long_term_memories(
     kb_id: Optional[int] = None,
     status: Optional[str] = "active",
+    memory_category: Optional[str] = None,
     memory_type: Optional[str] = None,
     scope_type: Optional[str] = None,
     page: int = 1,
@@ -154,6 +155,8 @@ async def list_long_term_memories(
         count_query = count_query.filter(LongTermMemoryTable.scope_type == "user")
     if status:
         count_query = count_query.filter(LongTermMemoryTable.status == status)
+    if memory_category:
+        count_query = count_query.filter(LongTermMemoryTable.memory_category == memory_category)
     if memory_type:
         count_query = count_query.filter(LongTermMemoryTable.memory_type == memory_type)
     if scope_type:
@@ -163,6 +166,7 @@ async def list_long_term_memories(
             user_id=current_user.id,
             kb_id=kb_id,
             status=status,
+            memory_category=memory_category,
             memory_type=memory_type,
             scope_type=scope_type,
             page=page,

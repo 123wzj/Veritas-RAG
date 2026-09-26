@@ -162,6 +162,7 @@ export interface ChatMessage {
 
 export type MemoryStatus = "active" | "pending_confirmation" | "rejected" | "inactive" | "deleted" | "superseded"
 export type MemoryScope = "user" | "project"
+export type MemoryCategory = "episodic" | "semantic" | "procedural"
 export type MemorySource = "explicit_user" | "user_confirmed" | "inferred" | "imported" | "system"
 export type MemoryType = "profile" | "preference" | "constraint" | "project_state" | string
 
@@ -169,8 +170,11 @@ export interface Memory {
   memory_id: string
   user_id: number
   kb_id?: number | null
+  memory_category: MemoryCategory
   memory_type: MemoryType
   content: string
+  memory_payload?: Record<string, unknown>
+  usage_instruction?: string
   scope_type: MemoryScope | string
   source: MemorySource | string
   confidence: number

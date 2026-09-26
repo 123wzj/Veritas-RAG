@@ -93,6 +93,12 @@ class ConversationBranchTable(Base):
     branch_name = Column(String(255), nullable=True)
     parent_branch_id = Column(Integer, ForeignKey("conversation_branches.id"), nullable=True, index=True)
     parent_message_id = Column(Integer, nullable=True, index=True)
+    # Branches inherit the session summary as read-only background, while this
+    # summary stores branch-local decisions and open questions.
+    summary = Column(JSON, nullable=True)
+    summary_text = Column(Text, nullable=True)
+    summary_through_message_id = Column(Integer, nullable=True)
+    memory_version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     is_active = Column(Boolean, default=True)
 
@@ -129,8 +135,14 @@ class LongTermMemoryTable(Base):
     user_id = Column(Integer, nullable=False, index=True)
     kb_id = Column(Integer, nullable=True, index=True)
     scope_type = Column(String(20), default="user", nullable=False, index=True)
+    # Cognitive taxonomy: episodic / semantic / procedural.  memory_type stays
+    # as the business subtype (for example user_preference/project_context).
+    memory_category = Column(String(20), default="semantic", nullable=False, index=True)
     memory_type = Column(String(40), nullable=False, index=True)
     content = Column(Text, nullable=False)
+    # Canonical structured representation used for retrieval and prompt
+    # manifests.  content remains the human-readable/searchable projection.
+    memory_payload = Column(JSON, nullable=True)
     normalized_key = Column(String(255), nullable=False)
     keywords = Column(JSON, nullable=True)
     confidence = Column(Float, default=0.8, nullable=False)
@@ -169,6 +181,7 @@ class LongTermMemoryTable(Base):
         Index(
             "ix_long_term_memory_lookup",
             "user_id",
+            "memory_category",
             "memory_type",
             "normalized_key",
         ),

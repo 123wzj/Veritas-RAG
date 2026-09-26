@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -41,6 +42,7 @@ class ReactMemoryService:
         )
         if not session:
             raise PermissionError("Session is not owned by current user")
+        branch = None
         if branch_id is not None:
             branch = (
                 db.query(ConversationBranchTable)
@@ -101,6 +103,7 @@ class ReactMemoryService:
             candidates=candidates,
             recent_messages=recent_messages,
             session_summary=session_memory.summary if session_memory else {},
+            branch_summary=branch.summary if branch else {},
             working_memory={},
         )
         selected_set = set(selected_ids)
@@ -109,7 +112,8 @@ class ReactMemoryService:
         return memory_service._build_memory_payload(
             profile=profile,
             session=session,
-            session_memory=None if branch_id is not None else session_memory,
+            session_memory=session_memory,
+            branch_memory=branch,
             recent_messages=recent_messages,
             selected_memories=selected,
             query=query,
@@ -118,13 +122,32 @@ class ReactMemoryService:
 
     @staticmethod
     def initial_working_memory(*, run_id: str, query: str) -> Dict[str, Any]:
-        slot = AnswerSlot(id="slot-1", question=query, required=True)
+        cleaned = re.sub(r"\s+", " ", query or "").strip()
+        parts = [
+            item.strip(" ，,。；;？?")
+            for item in re.split(r"[；;？?\n]+|(?:同时|另外|此外|以及|还有)", cleaned)
+            if item.strip(" ，,。；;？?")
+        ]
+        # Short/simple requests remain one slot.  Complex multi-clause requests
+        # get explicit coverage targets before the first ReAct decision.
+        if len(parts) <= 1:
+            parts = [cleaned]
+        slots = [
+            AnswerSlot(id=f"slot-{index}", question=part, required=True)
+            for index, part in enumerate(parts[:6], start=1)
+        ]
+        constraints = [
+            sentence.strip()
+            for sentence in re.split(r"[。；;\n]+", cleaned)
+            if sentence.strip().startswith(("必须", "不要", "不能", "只", "需要", "确保"))
+        ][:10]
         return WorkingMemoryV2(
             run_id=run_id,
-            user_goal=query,
-            answer_slots=[slot],
-            unresolved_slots=[slot.id],
-            current_focus=query,
+            user_goal=cleaned,
+            answer_slots=slots,
+            constraints=constraints,
+            unresolved_slots=[slot.id for slot in slots],
+            current_focus=slots[0].question if slots else cleaned,
         ).model_dump(mode="json")
 
     @staticmethod

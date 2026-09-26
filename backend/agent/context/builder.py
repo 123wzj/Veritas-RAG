@@ -44,6 +44,51 @@ class ReactContextBuilder:
                 high = mid - 1
         return text[:low].rstrip() + "…"
 
+    def _fit_value(self, value: Any, budget: int) -> Any:
+        """Shrink structured values without producing broken JSON fragments."""
+        if budget <= 1:
+            return None
+        if estimate_tokens(self._json(value)) <= budget:
+            return value
+        if isinstance(value, list):
+            packed: List[Any] = []
+            for item in value:
+                candidate = [*packed, item]
+                if estimate_tokens(self._json(candidate)) <= budget:
+                    packed.append(item)
+                    continue
+                # Keep earlier, higher-priority objects intact.  A single large
+                # object may be reduced by fields, but is never sliced as text.
+                if not packed and isinstance(item, (dict, list)):
+                    reduced = self._fit_value(item, max(1, budget - 2))
+                    if reduced not in (None, {}, []):
+                        packed.append(reduced)
+                break
+            return packed
+        if isinstance(value, dict):
+            packed: Dict[str, Any] = {}
+            for key, item in value.items():
+                candidate = {**packed, key: item}
+                if estimate_tokens(self._json(candidate)) <= budget:
+                    packed[key] = item
+                    continue
+                if isinstance(item, (dict, list)):
+                    remaining = max(
+                        1,
+                        budget - estimate_tokens(self._json(packed)) - estimate_tokens(str(key)) - 4,
+                    )
+                    reduced = self._fit_value(item, remaining)
+                    reduced_candidate = {**packed, key: reduced}
+                    if reduced not in (None, {}, []) and estimate_tokens(self._json(reduced_candidate)) <= budget:
+                        packed[key] = reduced
+                # Preserve key priority and stop before lower-priority fields.
+                break
+            return packed
+        if isinstance(value, str):
+            # The string is re-serialized afterwards, so JSON remains valid.
+            return self._truncate(value, max(1, budget - 2))
+        return None
+
     def _section(
         self,
         name: str,
@@ -51,8 +96,13 @@ class ReactContextBuilder:
         value: Any,
         budget: int,
     ) -> Tuple[str, int, bool]:
-        raw = value if isinstance(value, str) else self._json(value)
-        content = self._truncate(raw, max(1, budget))
+        if isinstance(value, str):
+            raw = value
+            content = self._truncate(raw, max(1, budget))
+        else:
+            raw = self._json(value)
+            fitted = self._fit_value(value, max(1, budget))
+            content = self._json(fitted)
         rendered = (
             f'<CONTEXT_SECTION name="{name}" trust="{trust}">\n'
             f"{content}\n</CONTEXT_SECTION>"
@@ -130,6 +180,7 @@ class ReactContextBuilder:
             ("latest_observations", "tool", self._latest_observations(observations), 6000, False),
             ("evidence_ledger", "evidence", self._ledger_summary(evidence_ledger), max(5000, total_budget // 2), False),
             ("session_summary", "memory", memory_context.get("session_summary") or {}, 2400, False),
+            ("branch_summary", "memory", memory_context.get("branch_summary") or {}, 2400, False),
             ("recent_messages", "conversation", memory_context.get("recent_messages") or [], 6000, False),
             ("long_term_memory", "memory", memory_context.get("long_term_memories") or [], 3200, False),
             ("profile", "memory", memory_context.get("profile") or {}, 1200, False),
