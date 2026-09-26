@@ -3,10 +3,50 @@
 UPDATE `long_term_memories` SET `source` = 'explicit_user' WHERE `source` IN ('explicit', 'user');
 UPDATE `long_term_memories` SET `source` = 'user_confirmed' WHERE `source` = 'confirmed';
 
-ALTER TABLE `rag_spans`
-  ADD COLUMN IF NOT EXISTS `attempt_no` INT NOT NULL DEFAULT 1 AFTER `request_id`,
-  ADD COLUMN IF NOT EXISTS `node_name` VARCHAR(60) NULL AFTER `span_name`,
-  ADD COLUMN IF NOT EXISTS `span_kind` VARCHAR(30) NOT NULL DEFAULT 'agent_node' AFTER `node_name`;
+SET @attempt_no_exists := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'rag_spans'
+    AND column_name = 'attempt_no'
+);
+SET @attempt_no_sql := IF(
+  @attempt_no_exists = 0,
+  'ALTER TABLE rag_spans ADD COLUMN attempt_no INT NOT NULL DEFAULT 1 AFTER request_id',
+  'SELECT 1'
+);
+PREPARE attempt_no_stmt FROM @attempt_no_sql;
+EXECUTE attempt_no_stmt;
+DEALLOCATE PREPARE attempt_no_stmt;
+
+SET @node_name_exists := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'rag_spans'
+    AND column_name = 'node_name'
+);
+SET @node_name_sql := IF(
+  @node_name_exists = 0,
+  'ALTER TABLE rag_spans ADD COLUMN node_name VARCHAR(60) NULL AFTER span_name',
+  'SELECT 1'
+);
+PREPARE node_name_stmt FROM @node_name_sql;
+EXECUTE node_name_stmt;
+DEALLOCATE PREPARE node_name_stmt;
+
+SET @span_kind_exists := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'rag_spans'
+    AND column_name = 'span_kind'
+);
+SET @span_kind_sql := IF(
+  @span_kind_exists = 0,
+  'ALTER TABLE rag_spans ADD COLUMN span_kind VARCHAR(30) NOT NULL DEFAULT ''agent_node'' AFTER node_name',
+  'SELECT 1'
+);
+PREPARE span_kind_stmt FROM @span_kind_sql;
+EXECUTE span_kind_stmt;
+DEALLOCATE PREPARE span_kind_stmt;
 
 DELETE newer
 FROM `rag_spans` AS newer
