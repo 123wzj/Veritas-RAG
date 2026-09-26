@@ -145,6 +145,10 @@ class LongTermMemoryTable(Base):
     last_accessed_at = Column(DateTime(timezone=True), nullable=True)
     valid_from = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     valid_to = Column(DateTime(timezone=True), nullable=True)
+    conflict_group = Column(String(64), nullable=True, index=True)
+    stale_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    deletion_tombstone = Column(Boolean, default=False, nullable=False)
+    embedding_ref = Column(String(255), nullable=True)
     memory_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
@@ -228,6 +232,12 @@ class RAGRunTable(Base):
     output_tokens = Column(Integer, nullable=False, default=0)
     selected_evidence_ids = Column(JSON, nullable=True)
     selected_memory_ids = Column(JSON, nullable=True)
+    runtime_mode = Column(String(30), nullable=False, default="legacy", index=True)
+    iteration_count = Column(Integer, nullable=False, default=0)
+    stop_reason = Column(String(60), nullable=True)
+    tool_call_count = Column(Integer, nullable=False, default=0)
+    budget_profile = Column(String(40), nullable=True)
+    shadow_metrics = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -248,3 +258,60 @@ class RAGSpanTable(Base):
     output_tokens = Column(Integer, nullable=False, default=0)
     metadata_json = Column("metadata", JSON, nullable=True)
     error = Column(Text, nullable=True)
+
+
+class AgentToolCallTable(Base):
+    """Durable idempotency and audit record for a server-authorized tool call."""
+
+    __tablename__ = "agent_tool_calls"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    request_id = Column(String(64), nullable=False, index=True)
+    tool_call_id = Column(String(128), nullable=False)
+    user_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(64), nullable=False, index=True)
+    branch_id = Column(Integer, nullable=True, index=True)
+    kb_id = Column(Integer, nullable=True, index=True)
+    tool_name = Column(String(80), nullable=False, index=True)
+    args_hash = Column(String(64), nullable=False)
+    arguments_json = Column(JSON, nullable=True)
+    status = Column(String(30), nullable=False, default="started", index=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    latency_ms = Column(Integer, nullable=True)
+    error_code = Column(String(80), nullable=True)
+    observation_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "tool_call_id",
+            "user_id",
+            "session_id",
+            name="uq_agent_tool_call_scope",
+        ),
+    )
+
+
+class AgentObservationTable(Base):
+    """Compact observation persisted separately from potentially large tool output."""
+
+    __tablename__ = "agent_observations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    observation_id = Column(String(64), nullable=False, unique=True, index=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    tool_call_id = Column(String(128), nullable=False, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(64), nullable=False, index=True)
+    tool_name = Column(String(80), nullable=False)
+    status = Column(String(30), nullable=False)
+    summary = Column(Text, nullable=False)
+    evidence_ids = Column(JSON, nullable=True)
+    supported_slots = Column(JSON, nullable=True)
+    missing_slots = Column(JSON, nullable=True)
+    conflicts = Column(JSON, nullable=True)
+    observation_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

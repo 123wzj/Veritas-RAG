@@ -7,11 +7,11 @@ from backend.models.database.user import RAGRunTable, RAGSpanTable
 
 
 class TraceService:
-    def start_run(self, db: Session, *, request_id: str, user_id: int, session_id: str, kb_id: Optional[int]) -> RAGRunTable:
+    def start_run(self, db: Session, *, request_id: str, user_id: int, session_id: str, kb_id: Optional[int], runtime_mode: str = "legacy", budget_profile: Optional[str] = None) -> RAGRunTable:
         run = db.query(RAGRunTable).filter(RAGRunTable.request_id == request_id).first()
         if run:
             return run
-        run = RAGRunTable(request_id=request_id, user_id=user_id, session_id=session_id, kb_id=kb_id, final_status="running")
+        run = RAGRunTable(request_id=request_id, user_id=user_id, session_id=session_id, kb_id=kb_id, final_status="running", runtime_mode=runtime_mode, budget_profile=budget_profile)
         db.add(run)
         db.flush()
         return run
@@ -21,7 +21,7 @@ class TraceService:
         db.add(span)
         return span
 
-    def finish_run(self, db: Session, *, request_id: str, final_status: str, total_latency_ms: int, route_type: Optional[str] = None, answer_mode: Optional[str] = None, reflection_count: int = 0, input_tokens: int = 0, output_tokens: int = 0, selected_evidence_ids: Optional[list[str]] = None, selected_memory_ids: Optional[list[str]] = None, error: Optional[str] = None) -> Optional[RAGRunTable]:
+    def finish_run(self, db: Session, *, request_id: str, final_status: str, total_latency_ms: int, route_type: Optional[str] = None, answer_mode: Optional[str] = None, reflection_count: int = 0, input_tokens: int = 0, output_tokens: int = 0, selected_evidence_ids: Optional[list[str]] = None, selected_memory_ids: Optional[list[str]] = None, runtime_mode: Optional[str] = None, iteration_count: int = 0, stop_reason: Optional[str] = None, tool_call_count: int = 0, budget_profile: Optional[str] = None, shadow_metrics: Optional[dict[str, Any]] = None, error: Optional[str] = None) -> Optional[RAGRunTable]:
         run = db.query(RAGRunTable).filter(RAGRunTable.request_id == request_id).first()
         if not run:
             return None
@@ -34,6 +34,14 @@ class TraceService:
         run.output_tokens = output_tokens
         run.selected_evidence_ids = selected_evidence_ids or []
         run.selected_memory_ids = selected_memory_ids or []
+        if runtime_mode:
+            run.runtime_mode = runtime_mode
+        run.iteration_count = iteration_count
+        run.stop_reason = stop_reason
+        run.tool_call_count = tool_call_count
+        if budget_profile:
+            run.budget_profile = budget_profile
+        run.shadow_metrics = shadow_metrics or {}
         run.error = error
         run.completed_at = datetime.utcnow()
         return run

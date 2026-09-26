@@ -15,9 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from backend.api.deps.common import get_current_user
 from backend.db.mysql.connection import get_db as get_db_func
-from backend.graph.graph import run_agentic_rag
+from backend.agent.runtime import get_runtime_mode, run_rag_runtime
+from backend.core.config import settings
 from backend.models.schemas.rag import RAGQueryRequest
 from backend.models.database.user import AnswerFeedbackTable, MessageTable, SessionTable, RAGRunTable, RAGSpanTable
 from backend.api.deps.common import get_required_user
@@ -42,6 +42,7 @@ async def _generate_sse_from_graph(
     web_enabled: bool,
     session_id: str | None,
     top_k: int | None,
+    branch_id: int | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     logger.info(
@@ -54,7 +55,9 @@ async def _generate_sse_from_graph(
 
     db: Session | None = next(get_db_func())
     resolved_session_id: str | None = session_id
+    resolved_branch_id: int | None = branch_id
     request_id = str(uuid.uuid4())
+    runtime_mode = get_runtime_mode()
 
     try:
         turn = turn_service.begin_turn(
@@ -64,11 +67,13 @@ async def _generate_sse_from_graph(
             kb_id=kb_id,
             request_id=request_id,
             query=query,
+            branch_id=branch_id,
         )
         session = turn["session"]
         created = turn["created_session"]
         resolved_session_id = session.session_id
-        trace_service.start_run(db, request_id=request_id, user_id=user_id, session_id=resolved_session_id, kb_id=kb_id)
+        resolved_branch_id = turn.get("branch_id")
+        trace_service.start_run(db, request_id=request_id, user_id=user_id, session_id=resolved_session_id, kb_id=kb_id, runtime_mode=runtime_mode, budget_profile=settings.AGENT_CONTEXT_PROFILE)
         db.commit()
         if created:
             logger.info("自动创建会话成功: session_id=%s", resolved_session_id)
@@ -93,7 +98,7 @@ async def _generate_sse_from_graph(
         memory_update_plan = None
         emitted_event_count = 0
 
-        async for event in run_agentic_rag(
+        async for event in run_rag_runtime(
             query=query,
             user_id=user_id,
             request_id=request_id,
@@ -102,6 +107,8 @@ async def _generate_sse_from_graph(
             web_enabled=web_enabled,
             stream_events=True,
             top_k=top_k,
+            branch_id=resolved_branch_id,
+            runtime_mode=runtime_mode,
         ):
             if not isinstance(event, dict):
                 continue
@@ -174,7 +181,7 @@ async def _generate_sse_from_graph(
                             metadata={"source": "graph.latency_breakdown"},
                         )
                         started_span_names.add(normalized)
-                trace_service.finish_run(db, request_id=request_id, final_status="completed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type"), answer_mode=(final_state.get("evidence_grade") or {}).get("answer_mode") if isinstance(final_state.get("evidence_grade"), dict) else None, reflection_count=int(final_state.get("reflection_count") or 0), input_tokens=int((final_state.get("context_token_usage") or {}).get("used") or 0), output_tokens=int(final_state.get("output_tokens") or 0), selected_evidence_ids=[str(item.get("evidence_id")) for item in final_state.get("selected_evidence", []) if item.get("evidence_id")], selected_memory_ids=(final_state.get("memory_context") or {}).get("selected_memory_ids") or [])
+                trace_service.finish_run(db, request_id=request_id, final_status="completed", total_latency_ms=int((time.time() - start_time) * 1000), route_type=final_state.get("route_type") or ("react" if runtime_mode == "react" else "legacy"), answer_mode=(final_state.get("evidence_grade") or {}).get("answer_mode") if isinstance(final_state.get("evidence_grade"), dict) else None, reflection_count=int(final_state.get("reflection_count") or 0), input_tokens=int((final_state.get("context_token_usage") or {}).get("used") or 0), output_tokens=int(final_state.get("output_tokens") or 0), selected_evidence_ids=[str(item.get("evidence_id")) for item in final_state.get("selected_evidence", []) if item.get("evidence_id")], selected_memory_ids=(final_state.get("memory_context") or {}).get("selected_memory_ids") or [], runtime_mode=runtime_mode, iteration_count=int(final_state.get("iteration") or 0), stop_reason=final_state.get("stop_reason"), tool_call_count=len(final_state.get("tool_calls") or []), budget_profile=(final_state.get("budgets") or {}).get("profile") or settings.AGENT_CONTEXT_PROFILE, shadow_metrics=final_state.get("shadow_metrics") or {})
                 persisted = turn_service.finalize_turn(
                     db=db,
                     user_id=user_id,
@@ -183,6 +190,7 @@ async def _generate_sse_from_graph(
                     answer=final_answer,
                     citations=final_citations,
                     memory_update_plan=memory_update_plan,
+                    branch_id=resolved_branch_id,
                 )
             finally:
                 db.close()
@@ -284,7 +292,7 @@ async def test_endpoint(request: RAGQueryRequest):
 @router.post("/query/stream")
 async def query_rag_stream(
     request: RAGQueryRequest,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_required_user),
 ):
     try:
         logger.info(
@@ -293,7 +301,7 @@ async def query_rag_stream(
             request.kb_id,
             request.web_enabled,
         )
-        user_id = current_user.id if current_user else 1
+        user_id = current_user.id
 
         return StreamingResponse(
             _generate_sse_from_graph(
@@ -303,6 +311,7 @@ async def query_rag_stream(
                 web_enabled=request.web_enabled,
                 session_id=request.session_id,
                 top_k=request.top_k,
+                branch_id=request.branch_id,
             ),
             media_type="text/event-stream",
         )
@@ -314,9 +323,9 @@ async def query_rag_stream(
 @router.post("/query")
 async def query_rag(
     request: RAGQueryRequest,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_required_user),
 ):
-    user_id = current_user.id if current_user else 1
+    user_id = current_user.id
     result = None
     last_error = None
 
@@ -327,6 +336,7 @@ async def query_rag(
         web_enabled=request.web_enabled,
         session_id=request.session_id,
         top_k=request.top_k,
+        branch_id=request.branch_id,
     ):
         lines = chunk.strip().split("\n")
         event_type = None

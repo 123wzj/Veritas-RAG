@@ -110,6 +110,25 @@ class MemoryContextEngineeringTest(unittest.TestCase):
         # V1.5 deliberately maps the compatibility "pro" tier to Flash.
         self.assertEqual(get_llm("pro").model_name, "deepseek-v4-flash")
 
+    def test_turn_service_uses_active_branch_when_request_omits_branch_id(self):
+        branch = ConversationBranchTable(
+            session_id="session-1",
+            branch_name="active",
+            is_active=True,
+        )
+        self.db.add(branch)
+        self.db.commit()
+        turn = TurnService().begin_turn(
+            db=self.db,
+            user_id=1,
+            session_id="session-1",
+            kb_id=7,
+            request_id="branch-turn",
+            query="continue branch",
+        )
+        self.assertEqual(turn["branch_id"], branch.id)
+        self.assertEqual(turn["message"].branch_id, branch.id)
+
     def test_context_assembler_respects_total_budget(self):
         assembler = ContextAssembler()
         result = assembler.assemble(

@@ -73,6 +73,7 @@ export interface Document {
 export interface RAGQueryRequest {
   query: string
   session_id?: string
+  branch_id?: number
   kb_id?: number
   web_enabled: boolean
   stream: boolean
@@ -222,6 +223,12 @@ export interface TraceRun {
   output_tokens: number
   selected_evidence_ids: string[]
   selected_memory_ids: string[]
+  runtime_mode: "legacy" | "react_shadow" | "react"
+  iteration_count: number
+  stop_reason?: string | null
+  tool_call_count: number
+  budget_profile?: string | null
+  shadow_metrics: Record<string, unknown>
   error?: string | null
   created_at?: string | null
   completed_at?: string | null

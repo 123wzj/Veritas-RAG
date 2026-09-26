@@ -85,7 +85,18 @@ def _sync_legacy_schema() -> None:
     _ensure_column("long_term_memories", "source", "`source` VARCHAR(30) NOT NULL DEFAULT 'inferred'")
     _ensure_column("long_term_memories", "last_confirmed_at", "`last_confirmed_at` DATETIME NULL")
     _ensure_column("long_term_memories", "expires_at", "`expires_at` DATETIME NULL")
+    _ensure_column("long_term_memories", "conflict_group", "`conflict_group` VARCHAR(64) NULL")
+    _ensure_column("long_term_memories", "stale_at", "`stale_at` DATETIME NULL")
+    _ensure_column("long_term_memories", "deletion_tombstone", "`deletion_tombstone` TINYINT(1) NOT NULL DEFAULT 0")
+    _ensure_column("long_term_memories", "embedding_ref", "`embedding_ref` VARCHAR(255) NULL")
     _ensure_column("answer_feedback", "updated_at", "`updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
+
+    _ensure_column("rag_runs", "runtime_mode", "`runtime_mode` VARCHAR(30) NOT NULL DEFAULT 'legacy'")
+    _ensure_column("rag_runs", "iteration_count", "`iteration_count` INT NOT NULL DEFAULT 0")
+    _ensure_column("rag_runs", "stop_reason", "`stop_reason` VARCHAR(60) NULL")
+    _ensure_column("rag_runs", "tool_call_count", "`tool_call_count` INT NOT NULL DEFAULT 0")
+    _ensure_column("rag_runs", "budget_profile", "`budget_profile` VARCHAR(40) NULL")
+    _ensure_column("rag_runs", "shadow_metrics", "`shadow_metrics` JSON NULL")
 
     _ensure_column("messages", "citations", "`citations` JSON NULL")
     _ensure_column("messages", "token_count", "`token_count` INT NOT NULL DEFAULT 0")

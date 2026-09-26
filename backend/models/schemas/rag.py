@@ -11,6 +11,7 @@ class RAGQueryRequest(BaseModel):
     """RAG 查询请求模型"""
     query: str = Field(..., min_length=1, max_length=2000)
     session_id: Optional[str] = None
+    branch_id: Optional[int] = None
     kb_id: Optional[int] = None
     web_enabled: bool = False
     stream: bool = True

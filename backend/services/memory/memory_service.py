@@ -53,6 +53,21 @@ class MemoryService:
     """Load bounded context and produce auditable LLM-controlled memory patches."""
 
     @staticmethod
+    def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None) if value.tzinfo else value
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+            return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+        except ValueError:
+            return None
+
+    @staticmethod
     def _trim_text(text: str, max_length: int) -> str:
         cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
         if len(cleaned) <= max_length:
@@ -273,14 +288,17 @@ class MemoryService:
         *,
         current_request_id: Optional[str] = None,
         turns: Optional[int] = None,
+        branch_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         if not session_id:
             return []
         turn_limit = max(1, turns or settings.CONTEXT_RECENT_TURNS)
         fetch_limit = max(turn_limit * 4, turn_limit * 2 + 4)
-        query = db.query(MessageTable).filter(
-            MessageTable.session_id == session_id,
-            MessageTable.branch_id.is_(None),
+        query = db.query(MessageTable).filter(MessageTable.session_id == session_id)
+        query = query.filter(
+            MessageTable.branch_id == branch_id
+            if branch_id is not None
+            else MessageTable.branch_id.is_(None)
         )
         if current_request_id:
             query = query.filter(or_(
@@ -324,12 +342,15 @@ class MemoryService:
         session_id: str,
         session_memory: Optional[SessionMemoryTable],
         db: Session,
+        branch_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        query = db.query(MessageTable).filter(
-            MessageTable.session_id == session_id,
-            MessageTable.branch_id.is_(None),
+        query = db.query(MessageTable).filter(MessageTable.session_id == session_id)
+        query = query.filter(
+            MessageTable.branch_id == branch_id
+            if branch_id is not None
+            else MessageTable.branch_id.is_(None)
         )
-        if session_memory and session_memory.summary_through_message_id:
+        if branch_id is None and session_memory and session_memory.summary_through_message_id:
             query = query.filter(
                 MessageTable.id > session_memory.summary_through_message_id
             )
@@ -390,6 +411,13 @@ class MemoryService:
             "expires_at": memory.expires_at.isoformat() if memory.expires_at else None,
             "source_session_id": memory.source_session_id,
             "source_message_id": memory.source_message_id,
+            "superseded_by": memory.superseded_by,
+            "valid_from": memory.valid_from.isoformat() if memory.valid_from else None,
+            "valid_to": memory.valid_to.isoformat() if memory.valid_to else None,
+            "conflict_group": memory.conflict_group,
+            "stale_at": memory.stale_at.isoformat() if memory.stale_at else None,
+            "deletion_tombstone": bool(memory.deletion_tombstone),
+            "embedding_ref": memory.embedding_ref,
             "access_count": int(memory.access_count or 0),
             "created_at": memory.created_at.isoformat() if memory.created_at else None,
             "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
@@ -438,15 +466,26 @@ class MemoryService:
         db: Session,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        now = datetime.now()
         rows = (
             db.query(LongTermMemoryTable)
             .filter(
                 LongTermMemoryTable.user_id == user_id,
                 LongTermMemoryTable.status == "active",
-                or_(LongTermMemoryTable.expires_at.is_(None), LongTermMemoryTable.expires_at > datetime.now()),
+                LongTermMemoryTable.deletion_tombstone.is_(False),
+                LongTermMemoryTable.valid_from <= now,
+                or_(LongTermMemoryTable.valid_to.is_(None), LongTermMemoryTable.valid_to > now),
+                or_(LongTermMemoryTable.expires_at.is_(None), LongTermMemoryTable.expires_at > now),
+                or_(LongTermMemoryTable.stale_at.is_(None), LongTermMemoryTable.stale_at > now),
                 or_(
-                    LongTermMemoryTable.kb_id.is_(None),
-                    LongTermMemoryTable.kb_id == kb_id,
+                    and_(
+                        LongTermMemoryTable.scope_type == "user",
+                        LongTermMemoryTable.kb_id.is_(None),
+                    ),
+                    and_(
+                        LongTermMemoryTable.scope_type == "project",
+                        LongTermMemoryTable.kb_id == kb_id,
+                    ),
                 ),
             )
             .order_by(LongTermMemoryTable.updated_at.desc(), LongTermMemoryTable.id.desc())
@@ -463,7 +502,11 @@ class MemoryService:
             scope_bonus = 1.5 if kb_id is not None and row.kb_id == kb_id else 0.5
             confidence = float(row.confidence or 0.0)
             access_bonus = min(int(row.access_count or 0), 10) * 0.02
-            score = lexical_score + scope_bonus + confidence + access_bonus
+            freshness_origin = row.last_confirmed_at or row.updated_at or row.created_at
+            freshness_days = max(0, (now - freshness_origin).days) if freshness_origin else 365
+            freshness_bonus = max(0.0, 1.0 - freshness_days / 365.0)
+            source_bonus = 0.4 if row.source in {"explicit", "confirmed", "user"} else 0.0
+            score = lexical_score + scope_bonus + confidence + access_bonus + freshness_bonus + source_bonus
             scored.append((score, lexical_score, row))
         scored.sort(
             key=lambda item: (
@@ -472,16 +515,27 @@ class MemoryService:
             ),
             reverse=True,
         )
-        return [
-            {
+        result = []
+        selected_conflicts = set()
+        selected_keys = set()
+        for score, lexical_score, row in scored:
+            conflict_key = row.conflict_group or ""
+            semantic_key = (row.scope_type, row.kb_id, row.memory_type, row.normalized_key)
+            if conflict_key and conflict_key in selected_conflicts:
+                continue
+            if semantic_key in selected_keys:
+                continue
+            result.append({
                 **self._serialize_long_term(row),
                 "selection_score": round(score, 4),
                 "lexical_score": round(lexical_score, 4),
-            }
-            for score, lexical_score, row in scored[
-                : limit or settings.MEMORY_LONG_TERM_CANDIDATE_LIMIT
-            ]
-        ]
+            })
+            selected_keys.add(semantic_key)
+            if conflict_key:
+                selected_conflicts.add(conflict_key)
+            if len(result) >= (limit or settings.MEMORY_LONG_TERM_CANDIDATE_LIMIT):
+                break
+        return result
 
     def _fallback_long_term_selection(
         self,
@@ -625,6 +679,7 @@ class MemoryService:
         kb_id: Optional[int] = None,
         current_request_id: Optional[str] = None,
         working_memory: Optional[Dict[str, Any]] = None,
+        branch_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         profile_row = self._ensure_profile(user_id, db)
         self._migrate_legacy_long_term_facts(profile_row, db)
@@ -635,6 +690,7 @@ class MemoryService:
             session_id,
             db,
             current_request_id=current_request_id,
+            branch_id=branch_id,
         )
         candidates = self._rank_long_term_candidates(
             user_id=user_id,
@@ -647,7 +703,7 @@ class MemoryService:
         return self._build_memory_payload(
             profile=profile,
             session=session,
-            session_memory=session_memory,
+            session_memory=None if branch_id is not None else session_memory,
             recent_messages=recent_messages,
             selected_memories=candidates,
             query=query,
@@ -662,6 +718,7 @@ class MemoryService:
         db: Session,
         *,
         current_request_id: Optional[str] = None,
+        branch_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         profile = self.get_user_profile(user_id, db) or {}
         session = self._get_session(user_id, session_id, db)
@@ -670,12 +727,13 @@ class MemoryService:
             session_id,
             db,
             current_request_id=current_request_id,
+            branch_id=branch_id,
         )
         db.commit()
         payload = self._build_memory_payload(
             profile=profile,
             session=session,
-            session_memory=session_memory,
+            session_memory=None if branch_id is not None else session_memory,
             recent_messages=recent_messages,
             selected_memories=[],
             query=query,
@@ -693,6 +751,7 @@ class MemoryService:
         kb_id: Optional[int] = None,
         current_request_id: Optional[str] = None,
         working_memory: Optional[Dict[str, Any]] = None,
+        branch_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         profile_row = self._ensure_profile(user_id, db)
         self._migrate_legacy_long_term_facts(profile_row, db)
@@ -703,6 +762,7 @@ class MemoryService:
             session_id,
             db,
             current_request_id=current_request_id,
+            branch_id=branch_id,
         )
         resolved_kb_id = kb_id if kb_id is not None else (session.kb_id if session else None)
         candidates = self._rank_long_term_candidates(
@@ -715,7 +775,7 @@ class MemoryService:
             query=query,
             candidates=candidates,
             recent_messages=recent_messages,
-            session_summary=session_memory.summary if session_memory else {},
+            session_summary=(session_memory.summary if session_memory and branch_id is None else {}),
             working_memory=working_memory or {},
         )
         selected_set = set(selected_ids)
@@ -738,7 +798,7 @@ class MemoryService:
         payload = self._build_memory_payload(
             profile=profile,
             session=session,
-            session_memory=session_memory,
+            session_memory=None if branch_id is not None else session_memory,
             recent_messages=recent_messages,
             selected_memories=selected,
             query=query,
@@ -791,6 +851,12 @@ class MemoryService:
             ):
                 continue
             confidence = max(0.0, min(float(raw.get("confidence") or 0.8), 1.0))
+            source = str(raw.get("source") or "inferred").strip().lower()
+            if source not in {"inferred", "explicit", "confirmed", "user", "imported"}:
+                source = "inferred"
+            status = str(raw.get("status") or "").strip().lower()
+            if status not in {"active", "pending_confirmation"}:
+                status = "pending_confirmation" if source == "inferred" else "active"
             result.append({
                 "action": action,
                 "target_memory_id": target_memory_id or None,
@@ -805,6 +871,12 @@ class MemoryService:
                     if self._trim_text(item, 40)
                 ][:20],
                 "confidence": confidence,
+                "source": source,
+                "status": status,
+                "valid_from": raw.get("valid_from"),
+                "expires_at": raw.get("expires_at"),
+                "stale_at": raw.get("stale_at"),
+                "conflict_group": self._trim_text(raw.get("conflict_group") or "", 64) or None,
                 "reason": self._trim_text(raw.get("reason") or "", 500),
             })
         return result[:12]
@@ -840,6 +912,7 @@ class MemoryService:
         verification: Optional[Dict[str, Any]] = None,
         confidence: Optional[float] = None,
         working_memory_draft: Optional[Dict[str, Any]] = None,
+        branch_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         session = self._get_session(user_id, session_id, db)
         session_memory = self._ensure_session_memory(session, db)
@@ -849,6 +922,7 @@ class MemoryService:
             session_id,
             session_memory,
             db,
+            branch_id=branch_id,
         )
         summary_messages = unsummarized_messages
         summary_update_required, summary_update_stats = self._summary_update_due(
@@ -856,6 +930,10 @@ class MemoryService:
             unsummarized_messages=unsummarized_messages,
             answer=answer,
         )
+        if branch_id is not None:
+            # Session summary is shared by every branch in the current schema.
+            # Do not let one branch overwrite another branch's compressed state.
+            summary_update_required = False
         candidates = self._rank_long_term_candidates(
             user_id=user_id,
             kb_id=kb_id,
@@ -873,6 +951,8 @@ class MemoryService:
             "kb_id": kb_id,
             "base_memory_version": int(session_memory.version or 0) if session_memory else 0,
             "summary_update_required": summary_update_required,
+            "skip_session_summary": branch_id is not None,
+            "branch_id": branch_id,
             "summary_update_stats": summary_update_stats,
             "summary_source_messages": summary_messages,
             "allowed_target_memory_ids": [
@@ -920,6 +1000,12 @@ class MemoryService:
       "normalized_key": "...",
       "keywords": ["..."],
       "confidence": 0-1,
+      "source": "inferred|explicit|confirmed",
+      "status": "pending_confirmation|active",
+      "valid_from": "可选 ISO-8601 时间",
+      "expires_at": "可选 ISO-8601 时间",
+      "stale_at": "可选 ISO-8601 时间",
+      "conflict_group": "可选冲突组",
       "reason": "..."
     }
   ],
@@ -1012,6 +1098,8 @@ class MemoryService:
                 "model_controlled": True,
                 "summary_updated": summary_update_required,
                 "summary_update_required": summary_update_required,
+                "skip_session_summary": branch_id is not None,
+                "branch_id": branch_id,
                 "summary_update_stats": summary_update_stats,
                 "summary_source_messages": summary_messages,
                 "base_memory_version": (
@@ -1059,6 +1147,7 @@ class MemoryService:
         *,
         db: Session,
         assistant_message_id: Optional[int] = None,
+        source_user_message_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         request_id = str(plan.get("request_id") or "")
         user_id = int(plan.get("user_id") or 0)
@@ -1082,6 +1171,7 @@ class MemoryService:
             raise ValueError("Session not found for memory update")
         session_memory = self._ensure_session_memory(session, db)
         current_version = int(session_memory.version or 0)
+        skip_session_summary = bool(plan.get("skip_session_summary"))
         base_version_raw = plan.get("base_memory_version")
         base_version = (
             int(base_version_raw)
@@ -1094,7 +1184,7 @@ class MemoryService:
             "version": session_memory.version,
             "summary_through_message_id": session_memory.summary_through_message_id,
         }
-        summary_updated = bool(
+        summary_updated = not skip_session_summary and bool(
             plan.get(
                 "summary_updated",
                 plan.get("session_summary") is not None,
@@ -1118,7 +1208,8 @@ class MemoryService:
                     int(assistant_message_id),
                 )
 
-        session_memory.version = current_version + 1
+        if not skip_session_summary:
+            session_memory.version = current_version + 1
         if not session.title or session.title == "新对话":
             session.title = self._sanitize_title(plan.get("title") or "新对话")
 
@@ -1159,26 +1250,25 @@ class MemoryService:
                     and action["target_memory_id"] not in allowed_target_ids
                 ):
                     continue
-                target = (
+                target_query = (
                     db.query(LongTermMemoryTable)
                     .filter(
                         LongTermMemoryTable.memory_id == action["target_memory_id"],
                         LongTermMemoryTable.user_id == user_id,
                         LongTermMemoryTable.status == "active",
                     )
-                    .first()
                 )
-                if target and (
-                    (
-                        target.scope_type == "project"
-                        and target.kb_id != plan_kb_id
+                if action_scope == "project":
+                    target_query = target_query.filter(
+                        LongTermMemoryTable.scope_type == "project",
+                        LongTermMemoryTable.kb_id == plan_kb_id,
                     )
-                    or (
-                        target.scope_type == "user"
-                        and target.kb_id is not None
+                else:
+                    target_query = target_query.filter(
+                        LongTermMemoryTable.scope_type == "user",
+                        LongTermMemoryTable.kb_id.is_(None),
                     )
-                ):
-                    target = None
+                target = target_query.first()
 
             if action_type == "create":
                 source = action.get("source") or "inferred"
@@ -1192,7 +1282,10 @@ class MemoryService:
                         LongTermMemoryTable.scope_type == action_scope,
                         LongTermMemoryTable.memory_type == (action.get("memory_type") or "project_context"),
                         LongTermMemoryTable.normalized_key == (action.get("normalized_key") or ""),
-                        LongTermMemoryTable.status.in_(["rejected", "deleted"]),
+                        or_(
+                            LongTermMemoryTable.status.in_(["rejected", "deleted"]),
+                            LongTermMemoryTable.deletion_tombstone.is_(True),
+                        ),
                     )
                     .first()
                 )
@@ -1216,7 +1309,7 @@ class MemoryService:
                     )
                     .first()
                 )
-                if duplicate:
+                if duplicate and duplicate.content.strip().casefold() == str(action.get("content") or "").strip().casefold():
                     before = self._serialize_long_term(duplicate)
                     duplicate.content = action.get("content") or duplicate.content
                     duplicate.keywords = action.get("keywords") or duplicate.keywords
@@ -1241,6 +1334,11 @@ class MemoryService:
                         "memory_id": duplicate.memory_id,
                     })
                     continue
+                if duplicate:
+                    conflict_group = duplicate.conflict_group or str(uuid.uuid4())
+                    duplicate.conflict_group = conflict_group
+                    proposed_status = "pending_confirmation"
+                    action["conflict_group"] = conflict_group
                 active_count = (
                     db.query(LongTermMemoryTable)
                     .filter(
@@ -1263,8 +1361,12 @@ class MemoryService:
                     confidence=action.get("confidence") or 0.8,
                     source=source,
                     status=proposed_status,
+                    valid_from=self._parse_optional_datetime(action.get("valid_from")) or datetime.now(),
+                    expires_at=self._parse_optional_datetime(action.get("expires_at")),
+                    stale_at=self._parse_optional_datetime(action.get("stale_at")),
+                    conflict_group=action.get("conflict_group"),
                     source_session_id=session_id,
-                    source_message_id=assistant_message_id,
+                    source_message_id=source_user_message_id,
                     memory_metadata={"created_by": "llm_memory_updater"},
                 )
                 db.add(memory)
@@ -1296,10 +1398,19 @@ class MemoryService:
                     float(action.get("confidence") or 0.0),
                 )
                 target.memory_type = action.get("memory_type") or target.memory_type
+                target.expires_at = self._parse_optional_datetime(action.get("expires_at")) or target.expires_at
+                target.stale_at = self._parse_optional_datetime(action.get("stale_at")) or target.stale_at
+                if action.get("source") in {"explicit", "confirmed", "user"}:
+                    target.last_confirmed_at = datetime.now()
             elif action_type == "invalidate":
                 target.status = "inactive"
                 target.valid_to = datetime.now()
             elif action_type == "replace":
+                replacement_source = action.get("source") or "inferred"
+                replacement_status = action.get("status") or (
+                    "pending_confirmation" if replacement_source == "inferred" else "active"
+                )
+                conflict_group = target.conflict_group or action.get("conflict_group") or str(uuid.uuid4())
                 replacement = LongTermMemoryTable(
                     memory_id=str(uuid.uuid4()),
                     user_id=user_id,
@@ -1310,17 +1421,23 @@ class MemoryService:
                     normalized_key=action.get("normalized_key") or target.normalized_key,
                     keywords=action.get("keywords") or target.keywords,
                     confidence=action.get("confidence") or target.confidence,
-                    source=action.get("source") or "inferred",
-                    status=action.get("status") or ("pending_confirmation" if (action.get("source") or "inferred") == "inferred" else "active"),
+                    source=replacement_source,
+                    status=replacement_status,
+                    valid_from=self._parse_optional_datetime(action.get("valid_from")) or datetime.now(),
+                    expires_at=self._parse_optional_datetime(action.get("expires_at")),
+                    stale_at=self._parse_optional_datetime(action.get("stale_at")),
+                    conflict_group=conflict_group,
                     source_session_id=session_id,
-                    source_message_id=assistant_message_id,
+                    source_message_id=source_user_message_id,
                     memory_metadata={"created_by": "llm_memory_updater"},
                 )
                 db.add(replacement)
                 db.flush()
-                target.status = "superseded"
-                target.superseded_by = replacement.memory_id
-                target.valid_to = datetime.now()
+                target.conflict_group = conflict_group
+                if replacement_status == "active":
+                    target.status = "superseded"
+                    target.superseded_by = replacement.memory_id
+                    target.valid_to = datetime.now()
                 self._add_update_log(
                     request_id=request_id,
                     user_id=user_id,

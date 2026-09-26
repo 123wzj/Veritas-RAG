@@ -54,15 +54,15 @@ Veritas RAG 文档
 
 | 模块 | 首选文档 | 代码入口 | 评测/验证 |
 |---|---|---|---|
-| ReAct Runtime/Tool Gateway | [V1.6 ReAct 架构](react-agent/README.md)、[运行时与工具协议](react-agent/ReAct运行时与工具协议.md) | 目标：`backend/agent/`；当前：`backend/graph/` | [迁移与验收](react-agent/迁移计划与验收标准.md) |
+| ReAct Runtime/Tool Gateway | [V1.6 ReAct 架构](react-agent/README.md)、[运行时与工具协议](react-agent/ReAct运行时与工具协议.md) | 新 Runtime：`backend/agent/`；回退：`backend/graph/` | [迁移与验收](react-agent/迁移计划与验收标准.md) |
 | Markdown 解析与分块 | [实现说明](<Agentic RAG 实现说明.md>)、[多模态 PRD](<多模态解析与检索增强PRD.md>) | `backend/services/ingestion/parser.py`、`chunker.py` | `tests/test_markdown_multimodal.py` |
 | 向量化与入库 | [实现说明](<Agentic RAG 实现说明.md>) | `backend/services/ingestion/ingestion.py`、`backend/embeddings/` | 入库测试、Chroma/MySQL 检查 |
 | Dense/BM25/RRF | [检索融合流程](<检索融合与端到端流程.md>) | `backend/services/retrieval/hybrid.py` | T2Retrieval 评测 |
 | 多样性与重排 | [检索融合流程](<检索融合与端到端流程.md>)、[T2 优化记录](<T2Retrieval检索评估扩容与去重优化记录.md>) | `backend/services/retrieval/diversity.py`、`reranker.py` | Recall/MRR/NDCG、Unique Parent Ratio |
-| Query/路由/Reflection | [实现说明](<Agentic RAG 实现说明.md>) | `backend/graph/nodes/query_nodes.py`、`reflection_nodes.py` | `test_query_routing.py`、`test_reflection_routing.py` |
-| 证据/引用/拒答 | [实现说明](<Agentic RAG 实现说明.md>) | `backend/graph/nodes/retrieval_nodes.py`、`generation_nodes.py` | `test_generation_grounding.py`、Citation 指标 |
-| 会话/摘要/长期记忆 | [记忆实现说明](<会话记忆与上下文工程实现说明.md>) | `backend/services/memory/`、`backend/services/chat/` | `test_memory_context_engineering.py`、V1.5 测试 |
-| 上下文预算 | [记忆实现说明](<会话记忆与上下文工程实现说明.md>) | `backend/services/context/context_assembler.py` | token、裁剪和摘要保留率 |
+| Query/ReAct 决策 | [ReAct 架构](react-agent/README.md) | `backend/agent/controller.py`、`backend/agent/graph.py`；旧节点仅作 legacy 回退 | `test_react_graph.py`、Shadow 指标 |
+| 证据/引用/拒答 | [ReAct 架构](react-agent/README.md) | `backend/agent/evidence/ledger.py`、`backend/agent/verification.py` | `test_evidence_ledger.py`、Citation 指标 |
+| 会话/摘要/长期记忆 | [记忆实现说明](<会话记忆与上下文工程实现说明.md>) | `backend/agent/memory/`、`backend/services/memory/`、`backend/services/chat/` | `test_memory_v2_conflicts.py`、`test_react_session_isolation.py` |
+| 上下文预算 | [记忆实现说明](<会话记忆与上下文工程实现说明.md>) | `backend/agent/context/builder.py`；旧 assembler 供 legacy 使用 | `test_react_context.py` |
 | Trace/Feedback | [V1.5 PRD](<V1.5 更懂用户的个人助手 PRD.md>)、[成熟方案](<成熟 Agentic RAG 工程落地设计方案.md>) | `backend/services/trace_service.py`、`backend/api/v1/endpoints/rag.py` | `test_v15_trace.py` |
 | Markdown 能力边界 | [项目现状](<项目现状梳理.md>)、[V1.5 PRD](<V1.5 更懂用户的个人助手 PRD.md>) | `backend/api/v1/endpoints/knowledge.py` | `test_v15_markdown_only.py` |
 | 前端聊天/知识库/记忆 | [V1.5 PRD](<V1.5 更懂用户的个人助手 PRD.md>) | `frontend/src/pages/`、`frontend/src/services/` | `npm run build` |

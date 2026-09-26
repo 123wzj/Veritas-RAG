@@ -65,12 +65,20 @@ class ConversationBranchService:
             if active_branch:
                 parent_branch_id = active_branch.id
 
+        # A session has exactly one active branch. The API may omit branch_id
+        # and let TurnService resolve this active branch server-side.
+        db.query(ConversationBranchTable).filter(
+            ConversationBranchTable.session_id == session_id,
+            ConversationBranchTable.is_active == True,
+        ).update({"is_active": False}, synchronize_session=False)
+
         # 创建新分支
         branch = ConversationBranchTable(
             session_id=session_id,
             branch_name=branch_name,
             parent_branch_id=parent_branch_id,
             parent_message_id=from_message_id,
+            is_active=True,
         )
 
         db.add(branch)
@@ -320,8 +328,11 @@ class ConversationBranchService:
             # 获取该消息之前的所有消息
             previous_messages = db.query(MessageTable).filter(
                 MessageTable.session_id == session_id,
-                MessageTable.created_at <= from_message.created_at,
-            ).all()
+                MessageTable.id <= from_message.id,
+                MessageTable.branch_id == from_message.branch_id
+                if from_message.branch_id is not None
+                else MessageTable.branch_id.is_(None),
+            ).order_by(MessageTable.id.asc()).all()
 
             # 复制消息到新分支
             for msg in previous_messages:

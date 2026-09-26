@@ -10,8 +10,8 @@
 - [迁移计划与验收标准](<迁移计划与验收标准.md>)
 
 > 版本：V1.6 架构基线  
-> 日期：2026-09-24  
-> 状态：设计完成，待代码重构  
+> 日期：2026-09-26
+> 状态：核心代码完成，默认 `legacy`，待数据库迁移与真实 Shadow 验收
 > 范围：个人知识库问答、多轮对话、知识库检索、联网搜索、三层记忆、引用、拒答与逐轮可观测性。暂不包含长任务、后台任务编排、多 Agent 协作和高风险写工具。
 
 ## 1. 为什么需要重构
@@ -40,6 +40,25 @@ load_memory
 6. 记忆系统虽然已有 session summary 和 long-term memory，但尚未完全融入每轮 Agent 决策与冲突/时效治理。
 
 本次重构不追求“让模型更自由”，而是把固定 RAG 流程改造成**有工具、有观察、有停止条件、受策略约束的有界 ReAct Agent**。
+
+### 1.1 2026-09-26 实现状态
+
+已落地：
+
+- `backend/agent/` 下的 schema、Working Memory v2、Evidence Ledger、Context Builder、Controller、Verifier 和新 LangGraph。
+- Tool Registry/Gateway/Policy、数据库幂等审计、`knowledge_search` 与 `web_search`。
+- `legacy/react_shadow/react` Dispatcher；线上 API 不再直接导入旧 Graph。
+- Shadow 只读执行、独立 Run ID、deadline、答案 hash/引用数量/迭代/停止原因指标。
+- 用户、session、branch、kb 四层作用域校验；活动分支自动解析，主线与分支历史隔离。
+- 长期记忆的 valid/stale/expiry、scope、conflict group、pending confirmation 和 tombstone 规则。
+- Trace API/前端运行详情显示 runtime、预算 profile、Tool 数、迭代和停止原因。
+
+仍未完成：
+
+- 尚未在目标 MySQL 执行 `20260926_react_runtime.sql`。
+- 尚未用真实业务问题运行 `react_shadow` 并达到切流门槛，因此默认仍是 `legacy`。
+- 当前身份依赖仍是项目原有的开发用户实现；Runtime 内部隔离已完成，但生产多用户上线前仍需接入真实认证。
+- 分支拥有独立最近消息，但当前 schema 没有独立 branch summary；为避免污染，分支轮次暂不更新共享 session summary。
 
 ## 2. ReAct 在本项目中的定义
 

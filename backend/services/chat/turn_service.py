@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
-from backend.models.database.user import MessageTable, SessionTable
+from backend.models.database.user import ConversationBranchTable, MessageTable, SessionTable
 from backend.services.context.context_assembler import estimate_tokens
 from backend.services.memory.memory_service import memory_service
 
@@ -71,6 +71,7 @@ class TurnService:
         kb_id: Optional[int],
         request_id: str,
         query: str,
+        branch_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         session, created = self.ensure_session(
             db=db,
@@ -78,6 +79,28 @@ class TurnService:
             session_id=session_id,
             kb_id=kb_id,
         )
+        if branch_id is None and not created:
+            active_branch = (
+                db.query(ConversationBranchTable)
+                .filter(
+                    ConversationBranchTable.session_id == session.session_id,
+                    ConversationBranchTable.is_active == True,
+                )
+                .order_by(ConversationBranchTable.id.desc())
+                .first()
+            )
+            branch_id = active_branch.id if active_branch else None
+        if branch_id is not None:
+            branch = (
+                db.query(ConversationBranchTable)
+                .filter(
+                    ConversationBranchTable.id == branch_id,
+                    ConversationBranchTable.session_id == session.session_id,
+                )
+                .first()
+            )
+            if not branch:
+                raise HTTPException(status_code=404, detail="Branch not found in session")
         if not created and int(session.message_count or 0) == 0 and (not session.title or session.title == "新对话"):
             session.title = self.title_from_query(query)
         existing = (
@@ -95,6 +118,7 @@ class TurnService:
                 "message": existing,
                 "created_session": created,
                 "idempotent": True,
+                "branch_id": existing.branch_id,
             }
 
         message = MessageTable(
@@ -104,6 +128,7 @@ class TurnService:
             citations=None,
             token_count=estimate_tokens(query),
             request_id=request_id,
+            branch_id=branch_id,
         )
         db.add(message)
         session.last_active = func.now()
@@ -140,6 +165,7 @@ class TurnService:
             "message": message,
             "created_session": created,
             "idempotent": False,
+            "branch_id": branch_id,
         }
 
     def finalize_turn(
@@ -152,6 +178,7 @@ class TurnService:
         answer: str,
         citations: list,
         memory_update_plan: Optional[Dict[str, Any]],
+        branch_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         session = (
             db.query(SessionTable)
@@ -163,6 +190,17 @@ class TurnService:
         )
         if not session:
             raise ValueError("Session not found")
+        if branch_id is not None:
+            branch = (
+                db.query(ConversationBranchTable)
+                .filter(
+                    ConversationBranchTable.id == branch_id,
+                    ConversationBranchTable.session_id == session_id,
+                )
+                .first()
+            )
+            if not branch:
+                raise ValueError("Branch not found in session")
 
         existing = (
             db.query(MessageTable)
@@ -186,6 +224,7 @@ class TurnService:
             citations=citations,
             token_count=estimate_tokens(answer),
             request_id=request_id,
+            branch_id=branch_id,
         )
         db.add(assistant_message)
         db.flush()
@@ -194,10 +233,22 @@ class TurnService:
 
         memory_result = {"applied": False, "actions": []}
         if memory_update_plan:
+            source_user_message = (
+                db.query(MessageTable)
+                .filter(
+                    MessageTable.request_id == request_id,
+                    MessageTable.role == "user",
+                    MessageTable.session_id == session_id,
+                )
+                .first()
+            )
             memory_result = memory_service.apply_memory_update_plan(
                 memory_update_plan,
                 db=db,
                 assistant_message_id=assistant_message.id,
+                source_user_message_id=(
+                    source_user_message.id if source_user_message else None
+                ),
             )
         db.commit()
         db.refresh(assistant_message)

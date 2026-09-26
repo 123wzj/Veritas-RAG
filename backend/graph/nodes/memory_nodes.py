@@ -32,6 +32,7 @@ async def load_user_memory(state: RAGState) -> Dict[str, Any]:
             query=query,
             db=db,
             current_request_id=state.get("request_id"),
+            branch_id=state.get("branch_id"),
         )
 
         events.append({
@@ -97,6 +98,7 @@ async def load_generation_memory(state: RAGState) -> Dict[str, Any]:
             kb_id=state.get("kb_id"),
             current_request_id=state.get("request_id"),
             working_memory=current.get("working_memory") or {},
+            branch_id=state.get("branch_id"),
         )
         if current.get("working_memory_generated_at"):
             memory_context["working_memory"] = current.get("working_memory") or {}
@@ -166,6 +168,7 @@ async def write_memory(state: RAGState) -> Dict[str, Any]:
                 working_memory_draft=(
                     (state.get("memory_context") or {}).get("working_memory")
                 ),
+                branch_id=state.get("branch_id"),
             )
 
         return {

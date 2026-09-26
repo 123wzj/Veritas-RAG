@@ -24,6 +24,7 @@ class RAGState(TypedDict):
     request_id: str
     # 会话 ID，用于把本次问答写入同一个聊天历史；没有时后端会自动创建。
     session_id: Optional[str]
+    branch_id: Optional[int]
     # 当前用户 ID，用于权限校验、知识库隔离、会话记忆读取。
     user_id: int
     # 当前选择的知识库 ID；为空时通常走闲聊、联网或普通模型回答。
@@ -130,6 +131,7 @@ def create_initial_state(
     request_id: Optional[str] = None,
     kb_id: Optional[int] = None,
     session_id: Optional[str] = None,
+    branch_id: Optional[int] = None,
     web_enabled: bool = False,
     top_k: Optional[int] = None,
     max_reflections: Optional[int] = None,
@@ -154,6 +156,7 @@ def create_initial_state(
     return {
         "request_id": request_id or str(uuid.uuid4()),
         "session_id": session_id,
+        "branch_id": branch_id,
         "user_id": user_id,
         "kb_id": kb_id,
         "query": query,

@@ -86,6 +86,12 @@ class TraceRunResponse(BaseModel):
     output_tokens: int
     selected_evidence_ids: list[str] = []
     selected_memory_ids: list[str] = []
+    runtime_mode: str = "legacy"
+    iteration_count: int = 0
+    stop_reason: Optional[str] = None
+    tool_call_count: int = 0
+    budget_profile: Optional[str] = None
+    shadow_metrics: dict = {}
     error: Optional[str] = None
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
